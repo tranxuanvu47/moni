@@ -31,7 +31,18 @@ yarn-error.*
 *.pem
 
 # local env files
+.env
 .env*.local
+src/config/ai.local.ts
+src/config/firebase.local.ts
+src/config/google.local.ts
+google-services.json
+GoogleService-Info.plist
+
+# IDE / tooling
+.idea/
+.codegraph/
+.claude/
 
 # typescript
 *.tsbuildinfo

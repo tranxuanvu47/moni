@@ -1,18 +1,28 @@
 {
   "expo": {
-    "name": "chitieu",
-    "slug": "chitieu",
+    "name": "AiTiMan Moni",
+    "slug": "mono",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "chitieu",
-    "userInterfaceStyle": "automatic",
+    "scheme": "mono",
+    "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.aitiman.moni",
+      "infoPlist": {
+        "NSCameraUsageDescription": "AiTiMan Moni dùng camera để chụp ảnh đính kèm giao dịch. Ảnh chỉ lưu trên máy.",
+        "NSPhotoLibraryUsageDescription": "AiTiMan Moni cần thư viện ảnh để đính kèm ảnh vào giao dịch. Ảnh chỉ lưu trên máy.",
+        "NSMicrophoneUsageDescription": "AiTiMan Moni dùng micro để ghi lại mô tả chi tiêu.",
+        "NSFaceIDUsageDescription": "AiTiMan Moni dùng Face ID để đăng nhập nhanh khi bạn đã bật nhớ mật khẩu.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
+      "package": "com.aitiman.moni",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#183D32",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
@@ -31,12 +41,56 @@
         {
           "image": "./assets/images/splash-icon.png",
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff"
+          "backgroundColor": "#F8F9F6"
         }
-      ]
+      ],
+      "expo-sqlite",
+      "expo-secure-store",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "AiTiMan Moni dùng micro để ghi lại mô tả chi tiêu.",
+          "recordAudioAndroid": true
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "AiTiMan Moni dùng camera để chụp ảnh đính kèm giao dịch. Ảnh chỉ lưu trên máy.",
+          "recordAudioAndroid": false
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "AiTiMan Moni cần thư viện ảnh để đính kèm ảnh vào giao dịch.",
+          "cameraPermission": "AiTiMan Moni dùng camera để chụp ảnh đính kèm giao dịch."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#183D32"
+        }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "AiTiMan Moni dùng Face ID để đăng nhập nhanh khi bạn đã bật nhớ mật khẩu."
+        }
+      ],
+      "expo-image",
+      "expo-sharing",
+      "@react-native-community/datetimepicker",
+      "@react-native-firebase/app",
+      "@react-native-firebase/auth"
     ],
+
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "privacy": "Dữ liệu chi tiêu lưu trên thiết bị."
     }
   }
 }

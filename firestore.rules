@@ -1,0 +1,186 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function isTime(value) {
+      return value is string
+        && value.matches('^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2})?$');
+    }
+
+    function isId(value) {
+      return value is string && value.matches('^[A-Za-z0-9_-]{1,80}$');
+    }
+
+    function validRevision(value) {
+      return value is int && value >= 1 && value <= 1000000000;
+    }
+
+    function validAmount(value) {
+      return value is int && value > 0 && value <= 1000000000000;
+    }
+
+    function deletedMatches(data) {
+      return (data.deleted == false && data.deletedAt == null)
+        || (data.deleted == true && isTime(data.deletedAt));
+    }
+
+    function baseSync(data) {
+      return validRevision(data.revision)
+        && data.schemaVersion == 1
+        && data.deviceId is string
+        && data.deviceId.size() > 0
+        && data.deviceId.size() <= 80
+        && isTime(data.updatedAt)
+        && deletedMatches(data)
+        && data.serverUpdatedAt == request.time;
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create, update: if isOwner(userId)
+        && request.resource.data.keys().hasOnly(['email', 'displayName', 'currency', 'schemaVersion', 'updatedAt', 'serverUpdatedAt'])
+        && request.resource.data.email is string
+        && request.resource.data.email.size() > 0
+        && request.resource.data.email.size() <= 120
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() <= 80
+        && request.resource.data.currency == 'VND'
+        && request.resource.data.schemaVersion == 1
+        && isTime(request.resource.data.updatedAt)
+        && request.resource.data.serverUpdatedAt == request.time;
+      allow delete: if false;
+
+      match /transactions/{txId} {
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId) && validTransaction(txId);
+        allow delete: if false;
+      }
+
+      match /categories/{categoryId} {
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId) && validCategory(categoryId);
+        allow delete: if false;
+      }
+
+      match /budgets/{budgetId} {
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId) && validBudget(budgetId);
+        allow delete: if false;
+      }
+
+      match /settings/{settingId} {
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId) && validSettings(settingId);
+        allow delete: if false;
+      }
+
+      match /accounts/{accountId} {
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId) && validAccount(accountId);
+        allow delete: if false;
+      }
+    }
+
+    function validTransaction(txId) {
+      let data = request.resource.data;
+      return data.keys().hasOnly([
+          'id', 'type', 'amount', 'currency', 'categoryId', 'description', 'occurredAt', 'createdAt',
+          'updatedAt', 'deletedAt', 'deleted', 'revision', 'deviceId', 'schemaVersion', 'source',
+          'fingerprint', 'accountId', 'transferAccountId', 'serverUpdatedAt'
+        ])
+        && baseSync(data)
+        && data.id == txId
+        && isId(data.id)
+        && data.type in ['income', 'expense', 'transfer']
+        && validAmount(data.amount)
+        && data.currency == 'VND'
+        && isId(data.categoryId)
+        && data.description is string
+        && data.description.size() <= 500
+        && isTime(data.occurredAt)
+        && isTime(data.createdAt)
+        && data.source in ['manual', 'ai', 'voice', 'image', 'bank_notification', 'sheets']
+        && (data.fingerprint == null || (data.fingerprint is string && data.fingerprint.size() <= 128))
+        && (data.accountId == null || isId(data.accountId))
+        && (data.transferAccountId == null || isId(data.transferAccountId));
+    }
+
+    function validCategory(categoryId) {
+      let data = request.resource.data;
+      return data.keys().hasOnly([
+          'id', 'name', 'icon', 'color', 'type', 'isDefault', 'sortOrder', 'createdAt',
+          'updatedAt', 'deletedAt', 'deleted', 'revision', 'deviceId', 'schemaVersion', 'serverUpdatedAt'
+        ])
+        && baseSync(data)
+        && data.id == categoryId
+        && isId(data.id)
+        && data.name is string
+        && data.name.size() > 0
+        && data.name.size() <= 80
+        && data.icon is string
+        && data.icon.size() > 0
+        && data.icon.size() <= 40
+        && data.color is string
+        && data.color.matches('^#[0-9A-Fa-f]{6}$')
+        && data.type in ['expense', 'income', 'both']
+        && data.isDefault is bool
+        && data.sortOrder is int
+        && data.sortOrder >= 0
+        && data.sortOrder <= 10000
+        && isTime(data.createdAt);
+    }
+
+    function validBudget(budgetId) {
+      let data = request.resource.data;
+      return data.keys().hasOnly([
+          'id', 'categoryId', 'amount', 'period', 'effectiveDate', 'createdAt',
+          'updatedAt', 'deletedAt', 'deleted', 'revision', 'deviceId', 'schemaVersion', 'serverUpdatedAt'
+        ])
+        && baseSync(data)
+        && data.id == budgetId
+        && isId(data.id)
+        && validAmount(data.amount)
+        && data.period == 'month'
+        && (data.categoryId == null || isId(data.categoryId))
+        && isTime(data.effectiveDate)
+        && isTime(data.createdAt);
+    }
+
+    function validSettings(settingId) {
+      let data = request.resource.data;
+      return data.keys().hasOnly([
+          'id', 'value', 'updatedAt', 'deletedAt', 'deleted', 'revision', 'deviceId', 'schemaVersion', 'serverUpdatedAt'
+        ])
+        && baseSync(data)
+        && data.id == settingId
+        && settingId in ['reminder_enabled', 'reminder_hour', 'reminder_minute', 'weekly_recap_enabled', 'budget_alert_enabled']
+        && data.value is string
+        && data.value.size() <= 40;
+    }
+
+    function validAccount(accountId) {
+      let data = request.resource.data;
+      return data.keys().hasOnly([
+          'id', 'name', 'type', 'bankCode', 'last4', 'updatedAt', 'deletedAt', 'deleted',
+          'revision', 'deviceId', 'schemaVersion', 'serverUpdatedAt'
+        ])
+        && baseSync(data)
+        && data.id == accountId
+        && isId(data.id)
+        && data.name is string
+        && data.name.size() > 0
+        && data.name.size() <= 80
+        && data.type in ['cash', 'bank', 'ewallet']
+        && (data.bankCode == null || (data.bankCode is string && data.bankCode.size() <= 20))
+        && (data.last4 == null || (data.last4 is string && data.last4.matches('^\\d{4}$')));
+    }
+  }
+}
