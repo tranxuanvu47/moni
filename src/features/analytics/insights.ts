@@ -50,8 +50,21 @@ export interface InsightPayload {
   topCategories: { name: string; amount: number; share: number }[];
   budgetAmount: number | null;
   budgetSpent: number;
+  budgetRemaining: number | null;
+  budgetRatio: number | null;
+  budgetLevel: 'ok' | 'warning' | 'exceeded' | 'unset' | null;
   transactionCount: number;
   averageDaily: number;
+  categoryBudgets: {
+    name: string;
+    amount: number;
+    spent: number;
+    remaining: number;
+    ratio: number;
+    level: 'ok' | 'warning' | 'exceeded' | 'unset';
+    warningThresholdPercent: number;
+    limitThresholdPercent: number;
+  }[];
 }
 
 export function insightCacheKey(payload: InsightPayload): string {

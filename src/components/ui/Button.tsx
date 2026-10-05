@@ -15,6 +15,8 @@ export function Button({ label, variant = 'primary', loading = false, disabled, 
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={rest.accessibilityLabel ?? label}
+      accessibilityState={{ disabled: Boolean(isDisabled), busy: loading }}
       disabled={isDisabled}
       style={({ pressed }) => [
         styles.base,
@@ -26,9 +28,9 @@ export function Button({ label, variant = 'primary', loading = false, disabled, 
       {...rest}
     >
       {loading ? (
-        <ActivityIndicator color={variant === 'primary' ? colors.surface : colors.primary} />
+        <ActivityIndicator accessibilityLabel="Đang xử lý" color={variant === 'primary' ? colors.surface : colors.primary} />
       ) : (
-        <AppText variant="bodyMedium" color={variant === 'primary' ? colors.surface : variant === 'danger' ? colors.expense : colors.primary}>
+        <AppText variant="bodyMedium" color={variant === 'primary' ? colors.surface : variant === 'danger' ? colors.expenseText : colors.primary}>
           {label}
         </AppText>
       )}
@@ -59,12 +61,13 @@ const styles = StyleSheet.create({
   },
   ghost: {
     backgroundColor: 'transparent',
-    minHeight: 40,
+    minHeight: 44,
   },
   disabled: {
     opacity: 0.45,
   },
   pressed: {
     opacity: 0.82,
+    transform: [{ scale: 0.985 }],
   },
 });

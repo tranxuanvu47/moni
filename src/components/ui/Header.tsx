@@ -58,15 +58,15 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   back: {
-    width: 40,
-    height: 40,
+    width: 48,
+    height: 48,
     alignItems: 'center',
     justifyContent: 'center',
   },
   add: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     borderWidth: 1,
     borderColor: colors.divider,
     backgroundColor: colors.surface,
@@ -75,5 +75,6 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.7,
+    transform: [{ scale: 0.96 }],
   },
 });

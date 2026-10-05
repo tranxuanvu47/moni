@@ -9,7 +9,7 @@ import { backoffDelayMs } from '@/src/services/sync/sanitize';
 import type { CanonicalRecord, CloudStore, SyncCycleResult } from '@/src/services/sync/types';
 import { getPreference, setMetaPreference } from '@/src/services/sync/meta';
 
-const APPLY_ORDER: SyncEntityName[] = ['categories', 'settings', 'budgets', 'transactions'];
+const APPLY_ORDER: SyncEntityName[] = ['categories', 'settings', 'accounts', 'budgets', 'transactions'];
 
 export async function runSyncCycle(input: {
   db: DatabaseClient;

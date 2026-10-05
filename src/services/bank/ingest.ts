@@ -1,92 +1,76 @@
-import { listCategories } from '@/src/database/repositories/categories';
-import { createTransaction } from '@/src/database/repositories/transactions';
 import type { DatabaseClient } from '@/src/database/client';
-import { parseBankNotification, type BankNotificationLike } from '@/src/features/bank/parse-notification';
+import { getDefaultAccount, listAccounts } from '@/src/database/repositories/accounts';
+import { listCategories } from '@/src/database/repositories/categories';
+import { matchCategorizationRule } from '@/src/database/repositories/categorization-rules';
+import { createInboxDraft } from '@/src/database/repositories/inbox';
 import { parseExpenseText } from '@/src/features/ai/local-parser';
+import { parseBankNotification, type BankNotificationLike } from '@/src/features/bank/parse-notification';
 import { INCOME_CATEGORY_ID, OTHER_CATEGORY_ID } from '@/src/features/categories/defaults';
-import { analyzeBankNotificationWithAi, getAiRuntimeConfig } from '@/src/services/ai/shopaikey';
 import { toLocalDateTime } from '@/src/utils/dates';
-import { formatVnd } from '@/src/utils/money';
 
 export type BankIngestResult =
   | { outcome: 'ignored' }
   | { outcome: 'duplicate'; fingerprint: string }
-  | { outcome: 'saved'; id: string; description: string; amount: number };
+  | { outcome: 'pending'; id: string; description: string; amount: number };
 
 export async function ingestBankNotification(
   db: DatabaseClient,
   notification: BankNotificationLike,
 ): Promise<BankIngestResult> {
   const parsed = parseBankNotification(notification);
-  if (!parsed) {
-    return { outcome: 'ignored' };
-  }
+  if (!parsed) return { outcome: 'ignored' };
 
-  const existing = await db.get<{ id: string }>(
+  const existingTransaction = await db.get<{ id: string }>(
     'SELECT id FROM transactions WHERE fingerprint = ? AND deleted_at IS NULL',
     [parsed.fingerprint],
   );
-  if (existing) {
-    return { outcome: 'duplicate', fingerprint: parsed.fingerprint };
-  }
+  const existingDraft = await db.get<{ id: string }>(
+    'SELECT id FROM transaction_drafts WHERE source = ? AND fingerprint = ? AND deleted_at IS NULL',
+    ['bank_notification', parsed.fingerprint],
+  );
+  if (existingTransaction || existingDraft) return { outcome: 'duplicate', fingerprint: parsed.fingerprint };
 
   const categories = await listCategories(db);
-  let categoryId = parsed.categoryId;
-  let description = parsed.description;
+  const [defaultAccount, accounts] = await Promise.all([getDefaultAccount(db), listAccounts(db)]);
+  const bankNeedle = parsed.bankLabel.toLocaleLowerCase('vi').replace(/[^a-z0-9]/g, '');
+  const suggestedAccount = accounts.find((account) => {
+    const identity = `${account.name} ${account.bankCode ?? ''}`.toLocaleLowerCase('vi').replace(/[^a-z0-9]/g, '');
+    return account.type === 'bank' && bankNeedle.length >= 3 && identity.includes(bankNeedle);
+  }) ?? defaultAccount;
+  let categoryId = parsed.categoryId || (parsed.type === 'income' ? INCOME_CATEGORY_ID : OTHER_CATEGORY_ID);
+  let uncertain = categoryId === OTHER_CATEGORY_ID;
+
+  const learnedRule = await matchCategorizationRule(db, { description: parsed.description });
+  if (learnedRule) {
+    categoryId = learnedRule.categoryId;
+    uncertain = false;
+  }
 
   const localDraft = parseExpenseText(
     `${parsed.type === 'income' ? 'nhận' : 'chi'} ${parsed.amount} ${parsed.rawBody}`,
     categories,
     new Date(parsed.occurredAtMs),
   )[0];
-  if (localDraft?.categoryId && !localDraft.categoryUncertain) {
+  if (!learnedRule && localDraft?.categoryId && !localDraft.categoryUncertain) {
     categoryId = localDraft.categoryId;
+    uncertain = false;
   }
 
-  const aiConfig = await getAiRuntimeConfig().catch(() => null);
-  if (aiConfig) {
-    try {
-      const relevantNames = categories
-        .filter((category) => category.type === parsed.type || category.type === 'both')
-        .map((category) => category.name);
-      const analysis = await analyzeBankNotificationWithAi({
-        rawBody: parsed.rawBody,
-        type: parsed.type,
-        amount: parsed.amount,
-        bankLabel: parsed.bankLabel,
-        categoryNames: relevantNames.length > 0 ? relevantNames : categories.map((category) => category.name),
-      });
-      const matched = categories.find(
-        (category) => category.name.toLocaleLowerCase('vi') === analysis.category.toLocaleLowerCase('vi'),
-      );
-      if (matched) {
-        categoryId = matched.id;
-      }
-      if (analysis.description) {
-        const money = `${parsed.type === 'income' ? '+' : '−'}${formatVnd(parsed.amount)}`;
-        description = `${parsed.bankLabel} · ${money} · ${analysis.description}`.slice(0, 400);
-      }
-    } catch {
-      // Giữ kết quả parser/local khi AI lỗi hoặc offline.
-    }
-  }
+  const draft = await createInboxDraft(db, {
+    source: 'bank_notification',
+    sourceEventId: notification.key,
+    fingerprint: parsed.fingerprint,
+    status: uncertain ? 'needs_review' : 'pending',
+    proposedType: parsed.type,
+    amount: parsed.amount,
+    categoryId,
+    accountId: suggestedAccount.id,
+    description: parsed.description,
+    occurredAt: toLocalDateTime(new Date(parsed.occurredAtMs)),
+    confidence: uncertain ? 0.55 : 0.9,
+    // Raw notification text is deliberately not persisted or sent to AI.
+    rawPayload: null,
+  });
 
-  try {
-    const created = await createTransaction(db, {
-      type: parsed.type,
-      amount: parsed.amount,
-      categoryId: categoryId || (parsed.type === 'income' ? INCOME_CATEGORY_ID : OTHER_CATEGORY_ID),
-      description,
-      occurredAt: toLocalDateTime(new Date(parsed.occurredAtMs)),
-      source: 'bank_notification',
-      fingerprint: parsed.fingerprint,
-    });
-    return { outcome: 'saved', id: created.id, description: created.description, amount: created.amount };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : '';
-    if (message.toLowerCase().includes('unique') || message.toLowerCase().includes('constraint')) {
-      return { outcome: 'duplicate', fingerprint: parsed.fingerprint };
-    }
-    throw error;
-  }
+  return { outcome: 'pending', id: draft.id, description: draft.description, amount: draft.amount ?? parsed.amount };
 }

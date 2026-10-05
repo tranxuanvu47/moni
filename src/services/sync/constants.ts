@@ -15,18 +15,20 @@ export type TransactionSource = (typeof TRANSACTION_SOURCES)[number];
 export const SHEET_NAMES = {
   transactions: 'Transactions',
   categories: 'Categories',
+  accounts: 'Accounts',
   budgets: 'Budgets',
   settings: 'Settings',
   metadata: 'SyncMetadata',
 } as const;
 
-export type SyncEntityName = 'transactions' | 'categories' | 'budgets' | 'settings';
+export type SyncEntityName = 'transactions' | 'categories' | 'accounts' | 'budgets' | 'settings';
 
 export type DataSheetName = (typeof SHEET_NAMES)[keyof typeof SHEET_NAMES];
 
 export const ENTITY_SHEETS: Record<SyncEntityName, DataSheetName> = {
   transactions: SHEET_NAMES.transactions,
   categories: SHEET_NAMES.categories,
+  accounts: SHEET_NAMES.accounts,
   budgets: SHEET_NAMES.budgets,
   settings: SHEET_NAMES.settings,
 };
@@ -45,6 +47,13 @@ export const HEADERS = {
     'deleted_at',
     'revision',
     'device_id',
+    'source',
+    'fingerprint',
+    'account_id',
+    'transfer_account_id',
+    'transfer_fee',
+    'recurring_rule_id',
+    'occurrence_key',
   ],
   [SHEET_NAMES.categories]: [
     'id',
@@ -54,6 +63,23 @@ export const HEADERS = {
     'type',
     'is_default',
     'sort_order',
+    'created_at',
+    'updated_at',
+    'deleted_at',
+    'revision',
+    'device_id',
+  ],
+  [SHEET_NAMES.accounts]: [
+    'id',
+    'name',
+    'type',
+    'bank_code',
+    'masked_identifier',
+    'currency',
+    'opening_balance',
+    'opening_balance_date',
+    'archived_at',
+    'display_order',
     'created_at',
     'updated_at',
     'deleted_at',
@@ -71,6 +97,8 @@ export const HEADERS = {
     'deleted_at',
     'revision',
     'device_id',
+    'warning_threshold_bps',
+    'limit_threshold_bps',
   ],
   [SHEET_NAMES.settings]: ['id', 'value', 'updated_at', 'deleted_at', 'revision', 'device_id'],
   [SHEET_NAMES.metadata]: ['key', 'value'],
@@ -90,9 +118,34 @@ export const BUSINESS_FIELDS: Record<SyncEntityName, readonly string[]> = {
     'fingerprint',
     'account_id',
     'transfer_account_id',
+    'transfer_fee',
+    'recurring_rule_id',
+    'occurrence_key',
   ],
   categories: ['name', 'icon', 'color', 'type', 'is_default', 'sort_order', 'created_at', 'deleted_at'],
-  budgets: ['category_id', 'amount', 'period', 'effective_date', 'created_at', 'deleted_at'],
+  accounts: [
+    'name',
+    'type',
+    'bank_code',
+    'masked_identifier',
+    'currency',
+    'opening_balance',
+    'opening_balance_date',
+    'archived_at',
+    'display_order',
+    'created_at',
+    'deleted_at',
+  ],
+  budgets: [
+    'category_id',
+    'amount',
+    'period',
+    'effective_date',
+    'created_at',
+    'deleted_at',
+    'warning_threshold_bps',
+    'limit_threshold_bps',
+  ],
   settings: ['value', 'deleted_at'],
 };
 
@@ -119,6 +172,7 @@ export const metaKeys = {
   linkedUid: 'sync_linked_uid',
   cursorTransactions: 'sync_fs_cursor_transactions',
   cursorCategories: 'sync_fs_cursor_categories',
+  cursorAccounts: 'sync_fs_cursor_accounts',
   cursorBudgets: 'sync_fs_cursor_budgets',
   cursorSettings: 'sync_fs_cursor_settings',
 } as const;
@@ -126,6 +180,7 @@ export const metaKeys = {
 export const CURSOR_KEYS: Record<SyncEntityName, (typeof metaKeys)[keyof typeof metaKeys]> = {
   transactions: metaKeys.cursorTransactions,
   categories: metaKeys.cursorCategories,
+  accounts: metaKeys.cursorAccounts,
   budgets: metaKeys.cursorBudgets,
   settings: metaKeys.cursorSettings,
 };

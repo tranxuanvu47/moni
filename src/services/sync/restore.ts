@@ -8,12 +8,13 @@ export interface RestorePreview {
   transactions: number;
   deletedTransactions: number;
   categories: number;
+  accounts: number;
   budgets: number;
   settings: number;
   skipped: number;
 }
 
-const ORDER: SyncEntityName[] = ['categories', 'settings', 'budgets', 'transactions'];
+const ORDER: SyncEntityName[] = ['categories', 'settings', 'accounts', 'budgets', 'transactions'];
 
 export function previewSheets(sheets: Partial<Record<string, SheetSnapshot>>): RestorePreview {
   assertSchema(sheets[SHEET_NAMES.metadata]);
@@ -64,6 +65,7 @@ function summarize(records: CanonicalRecord[], skipped: number): RestorePreview 
     transactions: transactions.filter((record) => !record.fields.deleted_at).length,
     deletedTransactions: transactions.filter((record) => record.fields.deleted_at).length,
     categories: records.filter((record) => record.entity === 'categories' && !record.fields.deleted_at).length,
+    accounts: records.filter((record) => record.entity === 'accounts' && !record.fields.deleted_at).length,
     budgets: records.filter((record) => record.entity === 'budgets' && !record.fields.deleted_at).length,
     settings: records.filter((record) => record.entity === 'settings' && !record.fields.deleted_at).length,
     skipped,

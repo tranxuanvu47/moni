@@ -1,6 +1,6 @@
 import { INCOME_CATEGORY_ID, OTHER_CATEGORY_ID } from '@/src/features/categories/defaults';
 import { BANK_PACKAGE_LABELS } from '@/src/features/bank/packages';
-import { findAmount, formatVnd } from '@/src/utils/money';
+import { findAmount } from '@/src/utils/money';
 
 export interface BankNotificationLike {
   packageName: string;
@@ -30,7 +30,9 @@ const INCOME_HINT =
   /\b(nhận|nhan|cộng|cong|credit|nạp|nap|hoàn|hoan|refund|lương|luong|thưởng|thuong|tiền vào|tien vao|nhận tiền|nhan tien)\b/i;
 const EXPENSE_HINT =
   /\b(chi|thanh toán|thanh toan|debit|rút|rut|mua|qr|pos|ecom|trừ|tru|tiền ra|tien ra|chi tiêu|chi tieu)\b/i;
-const OTP_HINT = /\b(otp|mã xác thực|ma xac thuc|verification code|đăng nhập|dang nhap|password)\b/i;
+// Chỉ chặn OTP thật — không dùng "đăng nhập" vì nhiều NH ghi "vui lòng đăng nhập app để xem chi tiết".
+const OTP_HINT =
+  /\b(otp|mã\s*otp|ma\s*otp|mã xác thực|ma xac thuc|verification code|one[\s-]?time\s*password|mật khẩu giao dịch|mat khau giao dich)\b/i;
 const MONEY_HINT =
   /\b(vnd|đ|₫|vnđ|so tien|số tiền|gd|giao dịch|giao dich|tk|tài khoản|tai khoan|balance|số dư|so du|ps:)\b/i;
 
@@ -59,7 +61,7 @@ export function parseBankNotification(input: BankNotificationLike): ParsedBankTr
 
   const type = detectType(body, amountMatch.sign);
   const bankLabel = BANK_PACKAGE_LABELS[packageName] ?? (input.appName?.trim() || packageLabel(packageName));
-  const description = buildDescription(body, bankLabel, type, amountMatch.amount);
+  const description = buildDescription(body, type);
   const occurredAtMs = typeof input.postTime === 'number' && input.postTime > 0 ? input.postTime : Date.now();
   const fingerprint = buildFingerprint(packageName, input.key ?? '', amountMatch.amount, body, occurredAtMs);
 
@@ -158,11 +160,10 @@ function detectType(text: string, sign: '+' | '-' | null): 'expense' | 'income' 
   return 'expense';
 }
 
-function buildDescription(body: string, bankLabel: string, type: 'expense' | 'income', amount: number): string {
-  const money = `${type === 'income' ? '+' : '−'}${formatVnd(amount)}`;
+function buildDescription(body: string, type: 'expense' | 'income'): string {
   const nd = extractNoiDung(body);
   if (nd) {
-    return clip(`${bankLabel} · ${money} · ${nd}`, DESCRIPTION_MAX);
+    return clip(nd, DESCRIPTION_MAX);
   }
 
   const cleaned = stripNonAmountNoise(body)
@@ -172,9 +173,9 @@ function buildDescription(body: string, bankLabel: string, type: 'expense' | 'in
     .trim();
 
   if (!cleaned) {
-    return `${bankLabel} · ${money}`;
+    return type === 'income' ? 'Tiền vào' : 'Chuyển khoản';
   }
-  return clip(`${bankLabel} · ${money} · ${cleaned}`, DESCRIPTION_MAX);
+  return clip(cleaned, DESCRIPTION_MAX);
 }
 
 function extractNoiDung(body: string): string | null {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Linking,
   Modal,
   Platform,
@@ -31,7 +32,10 @@ import { AppIcon } from '@/src/components/ui/Icon';
 import { NumericKeypad } from '@/src/components/ui/NumericKeypad';
 import { CategoryPicker, SegmentedControl, TRANSACTION_TYPE_OPTIONS } from '@/src/components/ui/Pickers';
 import { getDatabase } from '@/src/database/expo-client';
+import { listAccounts } from '@/src/database/repositories/accounts';
+import { matchCategorizationRule } from '@/src/database/repositories/categorization-rules';
 import { listCategories } from '@/src/database/repositories/categories';
+import { getPreference, setPreference } from '@/src/database/repositories/preferences';
 import { addAttachment, createTransaction } from '@/src/database/repositories/transactions';
 import { parseExpenseInput } from '@/src/features/ai/parse-pipeline';
 import { describeAiError, permissionDeniedMessage } from '@/src/services/ai/errors';
@@ -40,7 +44,7 @@ import { deleteImage, persistImage } from '@/src/services/images/attachments';
 import { reviewBudgetAlert } from '@/src/services/notifications/reminders';
 import { useDataStore, useDraftStore } from '@/src/store/app-store';
 import { colors, radius } from '@/src/theme/tokens';
-import type { Category, TransactionType } from '@/src/types/finance';
+import type { Account, Category, TransactionType } from '@/src/types/finance';
 import { combineDateAndTime, formatIsoDate, localDateFromDate } from '@/src/utils/dates';
 
 export default function NewTransactionScreen() {
@@ -52,9 +56,13 @@ export default function NewTransactionScreen() {
   const setPendingAttachmentUri = useDraftStore((state) => state.setPendingAttachmentUri);
 
   const [categories, setCategories] = useState<Category[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [type, setType] = useState<TransactionType>('expense');
   const [amount, setAmount] = useState(0);
   const [categoryId, setCategoryId] = useState<string | null>(null);
+  const [accountId, setAccountId] = useState<string | null>(null);
+  const [transferAccountId, setTransferAccountId] = useState<string | null>(null);
+  const [transferFee, setTransferFee] = useState('');
   const [description, setDescription] = useState('');
   const [date, setDate] = useState(() => new Date());
   const [showDate, setShowDate] = useState(false);
@@ -73,14 +81,27 @@ export default function NewTransactionScreen() {
   const wasRecording = useRef(false);
   const handledUri = useRef<string | null>(null);
   const ignoreStop = useRef(false);
-  attachmentRef.current = attachmentUri;
+  const finishVoiceRef = useRef(finishVoice);
+
+  useEffect(() => {
+    attachmentRef.current = attachmentUri;
+  }, [attachmentUri]);
+
+  useEffect(() => {
+    finishVoiceRef.current = finishVoice;
+  });
 
   useFocusEffect(
     useCallback(() => {
-      listCategories(getDatabase())
-        .then((rows) => {
+      const db = getDatabase();
+      Promise.all([listCategories(db), listAccounts(db), getPreference(db, 'last_transaction_account')])
+        .then(([rows, accountRows, lastAccount]) => {
+          const activeAccounts = accountRows as Account[];
           setCategories(rows);
+          setAccounts(activeAccounts);
           setCategoryId((current) => current ?? defaultCategory(rows, 'expense'));
+          setAccountId((current) => current ?? activeAccounts.find((account) => account.id === lastAccount)?.id ?? activeAccounts[0]?.id ?? null);
+          setTransferAccountId((current) => current ?? activeAccounts.find((account) => account.id !== lastAccount)?.id ?? activeAccounts[1]?.id ?? null);
         })
         .catch(() => undefined);
     }, []),
@@ -120,7 +141,7 @@ export default function NewTransactionScreen() {
       const uri = recorder.uri;
       if (uri && handledUri.current !== uri) {
         handledUri.current = uri;
-        void finishVoice(uri, recording.durationMillis >= 59_000);
+        void finishVoiceRef.current(uri, recording.durationMillis >= 59_000);
       }
       return;
     }
@@ -130,7 +151,7 @@ export default function NewTransactionScreen() {
   async function finishVoice(uri: string, capped: boolean) {
     const config = await getAiRuntimeConfig();
     if (!config) {
-      setMessage('Chuyển giọng nói thành chữ cần mạng và khóa AI trong bản build.');
+      setMessage('Chuyển giọng nói thành chữ cần mạng và khóa AI đã lưu trong Cài đặt.');
       return;
     }
     setBusy(true);
@@ -164,8 +185,9 @@ export default function NewTransactionScreen() {
         now: new Date(),
         categories,
         allowAi: true,
-        forceAi: true,
+        forceAi: false,
         ai: config ? { parseExpenseText: parseExpenseWithAi } : null,
+        matchCategoryRule: (input) => matchCategorizationRule(getDatabase(), input),
         describeError: describeAiError,
       });
       if (result.drafts.length === 0) {
@@ -255,7 +277,12 @@ export default function NewTransactionScreen() {
   }
 
   async function saveManual() {
-    if (!categoryId || amount <= 0 || savingRef.current) {
+    const isTransfer = type === 'transfer';
+    if (!categoryId || !accountId || amount <= 0 || savingRef.current) {
+      return;
+    }
+    if (isTransfer && (!transferAccountId || transferAccountId === accountId)) {
+      Alert.alert('Chuyển khoản', 'Hãy chọn hai tài khoản khác nhau.');
       return;
     }
     savingRef.current = true;
@@ -266,6 +293,9 @@ export default function NewTransactionScreen() {
         type,
         amount,
         categoryId,
+        accountId,
+        transferAccountId: isTransfer ? transferAccountId : null,
+        transferFee: isTransfer ? Number(transferFee.replace(/\D/g, '')) || 0 : 0,
         description: description.trim(),
         occurredAt: combineDateAndTime(formatIsoDate(localDateFromDate(date)), new Date()),
       });
@@ -274,6 +304,7 @@ export default function NewTransactionScreen() {
         committedRef.current = true;
       }
       await reviewBudgetAlert().catch(() => undefined);
+      await setPreference(db, 'last_transaction_account', accountId);
       bump();
       router.back();
     } catch {
@@ -298,79 +329,92 @@ export default function NewTransactionScreen() {
   return (
     <View style={styles.screen}>
       <StackHeader title="Thêm giao dịch" />
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <View style={styles.block}>
-          <SegmentedControl
-            value={type}
-            onChange={(next) => {
-              setType(next);
-              setCategoryId(defaultCategory(categories, next));
-            }}
-            options={TRANSACTION_TYPE_OPTIONS}
-          />
-          {type === 'transfer' ? (
-            <AppText variant="caption" color={colors.textSecondary}>
-              Chuyển khoản nội bộ không tính vào tổng thu hoặc tổng chi.
-            </AppText>
-          ) : null}
-          <AppText variant="label" color={colors.textSecondary}>
-            Hạng mục
-          </AppText>
-          <CategoryPicker
-            categories={categories}
-            type={type}
-            selectedId={categoryId}
-            onSelect={(category) => setCategoryId(category.id)}
-          />
-          <AppText variant="caption" color={colors.textSecondary}>
-            Nhập số tiền để lưu ngay, hoặc dùng văn bản và giọng nói để AI tự tách và chọn hạng mục.
-          </AppText>
-          <View style={styles.actions}>
-            <Action icon="pencil" label="Văn bản" onPress={() => { setMessage(null); setTextOpen(true); }} />
-            <Action icon="mic" label="Giọng nói" onPress={() => { setMessage(null); setVoiceOpen(true); }} />
-            <Action icon="camera" label="Chụp ảnh" onPress={() => router.push('/transaction/camera')} />
-            <Action icon="image" label="Thư viện" onPress={() => void chooseGallery()} />
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+          <View style={styles.block}>
+            <SegmentedControl
+              value={type}
+              onChange={(next) => {
+                setType(next);
+                setCategoryId(defaultCategory(categories, next));
+              }}
+              options={TRANSACTION_TYPE_OPTIONS}
+            />
           </View>
-          {attachmentUri ? (
-            <View style={styles.preview}>
-              <Image source={{ uri: attachmentUri }} style={styles.previewImage} contentFit="cover" />
-              <Pressable onPress={removeImage} accessibilityLabel="Bỏ ảnh">
-                <AppText variant="caption" color={colors.expense}>
-                  Bỏ ảnh
-                </AppText>
-              </Pressable>
+
+          <NumericKeypad amount={amount} onChange={setAmount} />
+
+          <View style={styles.block}>
+            <View style={styles.actions}>
+              <Action icon="pencil" label="AI text" onPress={() => { setMessage(null); setTextOpen(true); }} />
+              <Action icon="mic" label="Giọng nói" onPress={() => { setMessage(null); setVoiceOpen(true); }} />
+              <Action icon="camera" label="Camera" onPress={() => router.push('/transaction/camera')} />
+              <Action icon="image" label="Thư viện" onPress={() => void chooseGallery()} />
             </View>
-          ) : null}
-          <AppText variant="label" color={colors.textSecondary}>
-            Ghi chú
-          </AppText>
-          <TextInput
-            value={description}
-            onChangeText={setDescription}
-            placeholder="Ví dụ: Ăn sáng"
-            placeholderTextColor={colors.textSecondary}
-            style={styles.input}
+
+            <AppText variant="label" color={colors.textMuted}>Mô tả</AppText>
+            <TextInput
+              value={description}
+              onChangeText={setDescription}
+              placeholder={type === 'transfer' ? 'Ví dụ: Chuyển sang ví chi tiêu' : 'Ví dụ: Ăn sáng'}
+              placeholderTextColor={colors.textMuted}
+              accessibilityLabel="Mô tả giao dịch"
+              style={styles.input}
+            />
+
+            {type === 'transfer' ? (
+              <>
+                <AppText variant="caption" color={colors.textMuted}>Chuyển nội bộ không tính vào tổng thu hoặc tổng chi.</AppText>
+                <AppText variant="label" color={colors.textMuted}>Từ tài khoản</AppText>
+                <AccountPicker accounts={accounts} selectedId={accountId} onSelect={setAccountId} />
+                <AppText variant="label" color={colors.textMuted}>Đến tài khoản</AppText>
+                <AccountPicker accounts={accounts.filter((account) => account.id !== accountId)} selectedId={transferAccountId} onSelect={setTransferAccountId} />
+                <AppText variant="label" color={colors.textMuted}>Phí chuyển (không bắt buộc)</AppText>
+                <TextInput value={transferFee} onChangeText={setTransferFee} keyboardType="number-pad" placeholder="0 ₫" placeholderTextColor={colors.textMuted} accessibilityLabel="Phí chuyển khoản" style={styles.input} />
+              </>
+            ) : (
+              <>
+                <AppText variant="label" color={colors.textMuted}>Hạng mục</AppText>
+                <CategoryPicker categories={categories} type={type} selectedId={categoryId} onSelect={(category) => setCategoryId(category.id)} />
+                <AppText variant="label" color={colors.textMuted}>Tài khoản</AppText>
+                <AccountPicker accounts={accounts} selectedId={accountId} onSelect={setAccountId} />
+              </>
+            )}
+
+            <Pressable style={styles.dateRow} onPress={() => setShowDate(true)} accessibilityRole="button" accessibilityLabel="Chọn ngày giao dịch">
+              <AppIcon name="calendar" color={colors.textMuted} />
+              <AppText>{formatIsoDate(localDateFromDate(date)).split('-').reverse().join('/')}</AppText>
+            </Pressable>
+            {showDate ? (
+              <View>
+                <DateTimePicker value={date} mode="date" display={Platform.OS === 'ios' ? 'spinner' : 'default'} onChange={onDateChange} />
+                {Platform.OS === 'ios' ? <Button label="Xong" variant="ghost" onPress={() => setShowDate(false)} /> : null}
+              </View>
+            ) : null}
+
+            {attachmentUri ? (
+              <View style={styles.preview}>
+                <Image source={{ uri: attachmentUri }} style={styles.previewImage} contentFit="cover" />
+                <Pressable onPress={removeImage} accessibilityLabel="Bỏ ảnh"><AppText variant="caption" color={colors.expenseText}>Bỏ ảnh</AppText></Pressable>
+              </View>
+            ) : null}
+          </View>
+        </ScrollView>
+        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+          <Button
+            label="Lưu giao dịch"
+            onPress={() => void saveManual()}
+            loading={saving}
+            disabled={amount <= 0 || !categoryId || !accountId || (type === 'transfer' && (!transferAccountId || transferAccountId === accountId))}
           />
-          <Pressable style={styles.dateRow} onPress={() => setShowDate(true)} accessibilityRole="button">
-            <AppIcon name="calendar" color={colors.textSecondary} />
-            <AppText>{formatIsoDate(localDateFromDate(date)).split('-').reverse().join('/')}</AppText>
-          </Pressable>
-          {showDate ? (
-            <View>
-              <DateTimePicker value={date} mode="date" display={Platform.OS === 'ios' ? 'spinner' : 'default'} onChange={onDateChange} />
-              {Platform.OS === 'ios' ? <Button label="Xong" variant="ghost" onPress={() => setShowDate(false)} /> : null}
-            </View>
-          ) : null}
         </View>
-        <NumericKeypad amount={amount} onChange={setAmount} />
-        <View style={styles.block}>
-          <Button label="Lưu" onPress={() => void saveManual()} loading={saving} disabled={amount <= 0 || !categoryId} />
-        </View>
-      </ScrollView>
+      </KeyboardAvoidingView>
 
       {textOpen ? (
-        <View style={[styles.overlay, styles.overlayTop, { paddingTop: insets.top + 8 }]}>
-          <View style={styles.sheet}>
+        <Modal visible transparent animationType="slide" onRequestClose={() => setTextOpen(false)}>
+          <View style={styles.backdrop}>
+            <Pressable style={styles.dismiss} accessibilityLabel="Đóng" onPress={() => setTextOpen(false)} />
+            <View accessibilityViewIsModal style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 12) + 12 }]}>
             <AppText variant="heading">Nhập chi tiêu</AppText>
             <AppText variant="caption" color={colors.textSecondary}>
               AI sẽ tách từng khoản, đọc số tiền và chọn hạng mục.
@@ -389,9 +433,9 @@ export default function NewTransactionScreen() {
             {busy ? <ActivityIndicator color={colors.primary} /> : null}
             <Button label="Phân tích" onPress={() => void analyze(draftText)} loading={busy} />
             <Button label="Đóng" variant="ghost" onPress={() => setTextOpen(false)} />
+            </View>
           </View>
-          <Pressable style={styles.dismiss} onPress={() => setTextOpen(false)} />
-        </View>
+        </Modal>
       ) : null}
 
       <Modal visible={voiceOpen} transparent animationType="fade" onRequestClose={() => setVoiceOpen(false)}>
@@ -437,6 +481,45 @@ function Action({ icon, label, onPress }: { icon: string; label: string; onPress
   );
 }
 
+function AccountPicker({
+  accounts,
+  selectedId,
+  onSelect,
+}: {
+  accounts: Account[];
+  selectedId: string | null;
+  onSelect: (accountId: string) => void;
+}) {
+  if (accounts.length === 0) {
+    return <AppText variant="caption" color={colors.textMuted}>Chưa có tài khoản khả dụng.</AppText>;
+  }
+
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.accountChips}
+    >
+      {accounts.map((account) => {
+        const selected = account.id === selectedId;
+        return (
+          <Pressable
+            key={account.id}
+            accessibilityRole="button"
+            accessibilityState={{ selected }}
+            onPress={() => onSelect(account.id)}
+            style={[styles.accountChip, selected && styles.accountChipSelected]}
+          >
+            <AppText variant="caption" color={selected ? colors.surface : colors.text}>
+              {account.name}
+            </AppText>
+          </Pressable>
+        );
+      })}
+    </ScrollView>
+  );
+}
+
 function defaultCategory(categories: Category[], type: TransactionType): string | null {
   if (type === 'transfer') {
     return categories.find((category) => category.id === 'cat_other')?.id ?? null;
@@ -452,6 +535,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
+  flex: {
+    flex: 1,
+  },
   content: {
     paddingBottom: 24,
     gap: 12,
@@ -466,11 +552,9 @@ const styles = StyleSheet.create({
   },
   action: {
     flex: 1,
-    minHeight: 68,
+    minHeight: 56,
     borderRadius: radius.md,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.divider,
+    backgroundColor: colors.surfaceMuted,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
@@ -507,17 +591,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
-  overlay: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    backgroundColor: colors.overlay,
-    justifyContent: 'flex-end',
+  accountChips: {
+    gap: 8,
+    paddingVertical: 2,
   },
-  overlayTop: {
-    justifyContent: 'flex-start',
+  accountChip: {
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.divider,
+    backgroundColor: colors.surface,
+  },
+  accountChipSelected: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primary,
+  },
+  footer: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.divider,
+    backgroundColor: colors.surface,
+    paddingHorizontal: 20,
+    paddingTop: 12,
   },
   backdrop: {
     flex: 1,

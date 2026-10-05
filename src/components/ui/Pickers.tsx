@@ -28,6 +28,7 @@ export function SegmentedControl<T extends string>({
           <Pressable
             key={option.value}
             accessibilityRole="button"
+            accessibilityLabel={option.label}
             accessibilityState={{ selected }}
             onPress={() => onChange(option.value)}
             style={[styles.item, selected && styles.itemSelected]}
@@ -67,6 +68,7 @@ export function CategoryPicker({
           <Pressable
             key={category.id}
             accessibilityRole="button"
+            accessibilityLabel={`Hạng mục ${category.name}`}
             accessibilityState={{ selected }}
             onPress={() => onSelect(category)}
             style={[styles.chip, selected && styles.chipSelected]}
@@ -92,7 +94,7 @@ const styles = StyleSheet.create({
   },
   item: {
     flex: 1,
-    minHeight: 34,
+    minHeight: 44,
     borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
@@ -112,6 +114,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     paddingHorizontal: 12,
+    minHeight: 44,
     paddingVertical: 8,
     borderRadius: radius.pill,
     borderWidth: 1,

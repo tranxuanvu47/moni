@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 
 import { createMemoryClient } from '@/src/database/memory-client';
 import { migrate } from '@/src/database/migrate';
+import { createAccount, getAccount } from '@/src/database/repositories/accounts';
+import { getActiveBudget, upsertMonthlyBudget } from '@/src/database/repositories/budgets';
 import { DEFAULT_CATEGORIES } from '@/src/features/categories/defaults';
 import { createTransaction, getTransaction, listTransactions, sumAmount, updateTransaction, deleteTransaction } from '@/src/database/repositories/transactions';
 import type { DatabaseClient } from '@/src/database/client';
@@ -108,6 +110,61 @@ describe('đồng bộ Firestore', () => {
     expect(result.outcome).toBe('error');
     expect(store.countAll()).toBe(0);
     expect(await listTransactions(db, { limit: 20, offset: 0 })).toHaveLength(1);
+  });
+
+  it('đồng bộ tài khoản, trường giao dịch mở rộng và ngưỡng ngân sách theo vòng đầy đủ', async () => {
+    const phone = await setup();
+    const tablet = await setup();
+    const store = new MemoryCloudStore();
+    const bank = await createAccount(phone, {
+      name: 'Tài khoản lương',
+      type: 'bank',
+      bankCode: 'VCB',
+      maskedIdentifier: '•••• 4321',
+      openingBalance: 5_000_000,
+      openingBalanceDate: '2026-10-01',
+    });
+    const transfer = await createTransaction(phone, {
+      type: 'transfer',
+      amount: 750_000,
+      categoryId: 'cat_other',
+      accountId: bank.id,
+      transferAccountId: 'account_default_cash',
+      transferFee: 11_000,
+      recurringRuleId: 'rule_monthly_transfer',
+      occurrenceKey: 'recurring:rule_monthly_transfer:2026-10-04',
+      description: 'Rút tiền mặt',
+      occurredAt: '2026-10-04T08:00:00',
+    });
+    await upsertMonthlyBudget(phone, {
+      categoryId: null,
+      amount: 8_000_000,
+      effectiveDate: '2026-10-01',
+      warningThresholdBps: 7500,
+      limitThresholdBps: 9500,
+    });
+
+    await sync(phone, store);
+    await sync(tablet, store);
+
+    expect(await getAccount(tablet, bank.id)).toMatchObject({
+      name: 'Tài khoản lương',
+      bankCode: 'VCB',
+      maskedIdentifier: '•••• 4321',
+      openingBalance: 5_000_000,
+    });
+    expect(await getTransaction(tablet, transfer.id)).toMatchObject({
+      accountId: bank.id,
+      transferAccountId: 'account_default_cash',
+      transferFee: 11_000,
+      recurringRuleId: 'rule_monthly_transfer',
+      occurrenceKey: 'recurring:rule_monthly_transfer:2026-10-04',
+    });
+    expect(await getActiveBudget(tablet, null, '2026-10-04')).toMatchObject({
+      warningThresholdBps: 7500,
+      limitThresholdBps: 9500,
+    });
+    expect(store.records('accounts').some((record) => record.id === bank.id)).toBe(true);
   });
 
   it('đưa thay đổi sang máy khác, kể cả xóa, và không ghi đè khi xung đột', async () => {
@@ -224,6 +281,11 @@ describe('đồng bộ Firestore', () => {
 
   it('không tính chuyển khoản vào tổng chi', async () => {
     const db = await setup(false);
+    const destination = await createAccount(db, {
+      name: 'MB',
+      type: 'bank',
+      openingBalanceDate: '2026-10-01',
+    });
     await createTransaction(db, {
       type: 'expense',
       amount: 35000,
@@ -235,6 +297,8 @@ describe('đồng bộ Firestore', () => {
       type: 'transfer',
       amount: 2000000,
       categoryId: 'cat_other',
+      accountId: 'account_default_cash',
+      transferAccountId: destination.id,
       description: 'VCB sang MB',
       occurredAt: '2026-10-04T08:05:00',
     });
@@ -324,6 +388,68 @@ describe('đồng bộ Firestore', () => {
     expect(restored.preview.transactions).toBe(1);
     expect(await getTransaction(tablet, 'bad_row')).toBeNull();
   });
+
+  it('đọc header Sheets v1 và roundtrip bản ghi tài khoản với các cột cộng thêm', async () => {
+    const legacyHeader = [
+      'id',
+      'type',
+      'amount',
+      'currency',
+      'category_id',
+      'description',
+      'occurred_at',
+      'created_at',
+      'updated_at',
+      'deleted_at',
+      'revision',
+      'device_id',
+    ];
+    const legacy = parseSnapshot('transactions', {
+      header: legacyHeader,
+      rows: [[
+        'legacy_tx',
+        'expense',
+        '25000',
+        'VND',
+        'cat_food',
+        'Bữa sáng',
+        '2026-10-03T08:00:00',
+        '2026-10-03T08:00:00',
+        '2026-10-03T08:00:00',
+        '',
+        '1',
+        'legacy-device',
+      ]],
+    });
+    expect(legacy.records[0]?.fields).toMatchObject({
+      source: 'manual',
+      transfer_fee: '0',
+      recurring_rule_id: '',
+      occurrence_key: '',
+    });
+
+    const db = await setup(false);
+    const account = await createAccount(db, {
+      name: 'Ví phụ',
+      type: 'ewallet',
+      maskedIdentifier: 'user-***',
+      openingBalance: -50_000,
+      openingBalanceDate: '2026-09-01',
+    });
+    const local = (await listLocalRecords(db)).find((record) => record.entity === 'accounts' && record.id === account.id);
+    expect(local).toBeTruthy();
+    const encoded = encodeRecord(local!, 'sheet-device');
+    const parsed = parseSnapshot('accounts', {
+      header: [...HEADERS[SHEET_NAMES.accounts]],
+      rows: [encoded.values],
+    });
+    expect(parsed.records[0]?.fields).toMatchObject({
+      name: 'Ví phụ',
+      type: 'ewallet',
+      opening_balance: '-50000',
+      masked_identifier: 'user-***',
+    });
+  });
 });
 
 describe('quyết định gắn tài khoản và schema Firestore', () => {
@@ -376,10 +502,57 @@ describe('quyết định gắn tài khoản và schema Firestore', () => {
     expect(fromCloudDocument('transactions', 'tx_1', document)?.fields.description).toBe('Grab');
     expect(fromCloudDocument('transactions', 'tx_1', { ...document, amount: 150000.5 })).toBeNull();
     expect(fromCloudDocument('transactions', 'other', document)).toBeNull();
+    const legacyDocument = { ...document };
+    delete legacyDocument.transferFee;
+    delete legacyDocument.recurringRuleId;
+    delete legacyDocument.occurrenceKey;
+    expect(fromCloudDocument('transactions', 'tx_1', legacyDocument)?.fields).toMatchObject({
+      transfer_fee: '0',
+      recurring_rule_id: '',
+      occurrence_key: '',
+    });
     const remote = fromCloudDocument('transactions', 'tx_1', { ...document, revision: 4, amount: 180000 });
     expect(reconcileRemote(local, remote)).toBe('conflict');
     expect(reconcileRemote(local, null)).toBe('write');
     expect(reconcileRemote(local, fromCloudDocument('transactions', 'tx_1', { ...document, revision: 1, amount: 90000 }))).toBe('write');
+  });
+
+  it('làm sạch payload transaction trước khi gửi Firestore', () => {
+    const local: CanonicalRecord = {
+      entity: 'transactions',
+      id: 'tx_dirty',
+      revision: 1,
+      syncedRevision: 0,
+      syncStatus: 'pending',
+      deviceId: '',
+      updatedAt: '2026-10-04T08:00:00',
+      fields: {
+        type: 'expense',
+        amount: '150000',
+        currency: 'VND',
+        category_id: 'cat_transport',
+        description: 'x'.repeat(700),
+        occurred_at: '2026-10-04T08:00:00',
+        created_at: '2026-10-04T08:00:00',
+        deleted_at: '',
+        source: 'legacy_source',
+        fingerprint: 'bad/fingerprint',
+        account_id: 'bad account',
+        transfer_account_id: '',
+        transfer_fee: '0',
+        recurring_rule_id: 'bad/rule',
+        occurrence_key: 'k'.repeat(200),
+      },
+    };
+    const document = toCloudDocument(local, 'android-device');
+    expect(document.deviceId).toBe('android-device');
+    expect(String(document.description)).toHaveLength(500);
+    expect(document.source).toBe('manual');
+    expect(document.fingerprint).toBeNull();
+    expect(document.accountId).toBeNull();
+    expect(document.recurringRuleId).toBeNull();
+    expect(document.occurrenceKey).toBeNull();
+    expect(fromCloudDocument('transactions', 'tx_dirty', document)).not.toBeNull();
   });
 
   it('rules chỉ cho chủ tài khoản và không mở if true', () => {
@@ -390,6 +563,9 @@ describe('quyết định gắn tài khoản và schema Firestore', () => {
     expect(rules).toContain('hasOnly');
     for (const name of ['transactions', 'categories', 'budgets', 'settings', 'accounts']) {
       expect(rules).toContain(name);
+    }
+    for (const field of ['transferFee', 'recurringRuleId', 'occurrenceKey', 'warningThreshold1', 'warningThreshold2']) {
+      expect(rules).toContain(field);
     }
   });
 });

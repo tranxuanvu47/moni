@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Platform, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { Alert, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import * as ImagePicker from 'expo-image-picker';
 import { Image } from 'expo-image';
@@ -14,12 +14,15 @@ import { permissionDeniedMessage } from '@/src/services/ai/errors';
 import { deleteImage, persistImage } from '@/src/services/images/attachments';
 import { useDraftStore } from '@/src/store/app-store';
 import { colors, radius } from '@/src/theme/tokens';
-import type { Category, TransactionType } from '@/src/types/finance';
+import type { Account, Category, TransactionType } from '@/src/types/finance';
 import { combineDateAndTime, formatIsoDate, localDateFromDate, parseIsoDate } from '@/src/utils/dates';
 export interface TransactionFormValue {
   type: TransactionType;
   amount: number;
   categoryId: string;
+  accountId?: string | null;
+  transferAccountId?: string | null;
+  transferFee?: number;
   description: string;
   occurredAt: string;
   attachmentUri: string | null;
@@ -28,11 +31,13 @@ export interface TransactionFormValue {
 
 export function TransactionForm({
   categories,
+  accounts = [],
   initial,
   submitLabel,
   onSubmit,
 }: {
   categories: Category[];
+  accounts?: Account[];
   initial?: Partial<TransactionFormValue>;
   submitLabel: string;
   onSubmit: (value: TransactionFormValue) => Promise<void>;
@@ -41,6 +46,9 @@ export function TransactionForm({
   const [type, setType] = useState<TransactionType>(initial?.type ?? 'expense');
   const [amount, setAmount] = useState(initial?.amount ?? 0);
   const [categoryId, setCategoryId] = useState<string | null>(initial?.categoryId ?? defaultCategory(categories, initial?.type ?? 'expense'));
+  const [accountId, setAccountId] = useState<string | null>(initial?.accountId ?? accounts[0]?.id ?? null);
+  const [transferAccountId, setTransferAccountId] = useState<string | null>(initial?.transferAccountId ?? accounts.find((account) => account.id !== initial?.accountId)?.id ?? null);
+  const [transferFee, setTransferFee] = useState(String(initial?.transferFee ?? 0));
   const [description, setDescription] = useState(initial?.description ?? '');
   const [date, setDate] = useState(initialDate);
   const [showDate, setShowDate] = useState(false);
@@ -49,7 +57,10 @@ export function TransactionForm({
   const savingRef = useRef(false);
   const committedRef = useRef(false);
   const attachmentRef = useRef<string | null>(initial?.attachmentUri ?? null);
-  attachmentRef.current = attachmentUri;
+
+  useEffect(() => {
+    attachmentRef.current = attachmentUri;
+  }, [attachmentUri]);
 
   useEffect(() => {
     return () => {
@@ -110,7 +121,11 @@ export function TransactionForm({
   }
 
   async function save() {
-    if (!categoryId || amount <= 0 || savingRef.current) {
+    if (!categoryId || !accountId || amount <= 0 || savingRef.current) {
+      return;
+    }
+    if (type === 'transfer' && (!transferAccountId || transferAccountId === accountId)) {
+      Alert.alert('Chuyển khoản', 'Hãy chọn hai tài khoản khác nhau.');
       return;
     }
     savingRef.current = true;
@@ -120,6 +135,9 @@ export function TransactionForm({
         type,
         amount,
         categoryId,
+        accountId,
+        transferAccountId: type === 'transfer' ? transferAccountId : null,
+        transferFee: type === 'transfer' ? Number(transferFee.replace(/\D/g, '')) || 0 : 0,
         description: description.trim(),
         occurredAt: combineDateAndTime(formatIsoDate(localDateFromDate(date)), initial?.occurredAt ? new Date(initial.occurredAt) : new Date()),
         attachmentUri,
@@ -156,10 +174,23 @@ export function TransactionForm({
           Chuyển khoản nội bộ không tính vào tổng thu hoặc tổng chi.
         </AppText>
       ) : null}
-      <AppText variant="label" color={colors.textSecondary} style={styles.label}>
-        Hạng mục
-      </AppText>
-      <CategoryPicker categories={categories} type={type} selectedId={categoryId} onSelect={(category) => setCategoryId(category.id)} />
+      {type !== 'transfer' ? (
+        <>
+          <AppText variant="label" color={colors.textSecondary} style={styles.label}>Hạng mục</AppText>
+          <CategoryPicker categories={categories} type={type} selectedId={categoryId} onSelect={(category) => setCategoryId(category.id)} />
+          <AppText variant="label" color={colors.textSecondary} style={styles.label}>Tài khoản</AppText>
+          <AccountPicker accounts={accounts} selectedId={accountId} onSelect={setAccountId} />
+        </>
+      ) : (
+        <>
+          <AppText variant="label" color={colors.textSecondary} style={styles.label}>Từ tài khoản</AppText>
+          <AccountPicker accounts={accounts} selectedId={accountId} onSelect={setAccountId} />
+          <AppText variant="label" color={colors.textSecondary} style={styles.label}>Đến tài khoản</AppText>
+          <AccountPicker accounts={accounts.filter((account) => account.id !== accountId)} selectedId={transferAccountId} onSelect={setTransferAccountId} />
+          <AppText variant="label" color={colors.textSecondary} style={styles.label}>Phí chuyển</AppText>
+          <TextInput value={transferFee} onChangeText={setTransferFee} keyboardType="number-pad" style={styles.input} accessibilityLabel="Phí chuyển khoản" />
+        </>
+      )}
       <AppText variant="label" color={colors.textSecondary} style={styles.label}>
         Ghi chú
       </AppText>
@@ -195,8 +226,23 @@ export function TransactionForm({
         </View>
       ) : null}
       <NumericKeypad amount={amount} onChange={setAmount} />
-      <Button label={submitLabel} onPress={() => void save()} loading={busy} disabled={amount <= 0 || !categoryId} />
+      <Button label={submitLabel} onPress={() => void save()} loading={busy} disabled={amount <= 0 || !categoryId || !accountId || (type === 'transfer' && (!transferAccountId || transferAccountId === accountId))} />
     </View>
+  );
+}
+
+function AccountPicker({ accounts, selectedId, onSelect }: { accounts: Account[]; selectedId: string | null; onSelect: (id: string) => void }) {
+  return (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.accountChips}>
+      {accounts.map((account) => {
+        const selected = account.id === selectedId;
+        return (
+          <Pressable key={account.id} accessibilityRole="button" accessibilityState={{ selected }} onPress={() => onSelect(account.id)} style={[styles.accountChip, selected && styles.accountChipSelected]}>
+            <AppText variant="caption" color={selected ? colors.surface : colors.text}>{account.name}</AppText>
+          </Pressable>
+        );
+      })}
+    </ScrollView>
   );
 }
 
@@ -264,4 +310,7 @@ const styles = StyleSheet.create({
     height: 64,
     borderRadius: radius.md,
   },
+  accountChips: { gap: 8, paddingVertical: 4 },
+  accountChip: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 14, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.divider, backgroundColor: colors.surface },
+  accountChipSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
 });

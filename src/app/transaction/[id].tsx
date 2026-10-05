@@ -8,6 +8,7 @@ import { Button } from '@/src/components/ui/Button';
 import { AppText } from '@/src/components/ui/AppText';
 import { StackHeader } from '@/src/components/ui/Header';
 import { getDatabase } from '@/src/database/expo-client';
+import { listAccounts } from '@/src/database/repositories/accounts';
 import { listCategories } from '@/src/database/repositories/categories';
 import {
   addAttachment,
@@ -22,7 +23,7 @@ import { deleteImage } from '@/src/services/images/attachments';
 import { reviewBudgetAlert } from '@/src/services/notifications/reminders';
 import { useDataStore } from '@/src/store/app-store';
 import { colors, radius } from '@/src/theme/tokens';
-import type { Attachment, Category, TransactionListItem } from '@/src/types/finance';
+import type { Account, Attachment, Category, TransactionListItem } from '@/src/types/finance';
 import { formatDayLabel, localDateFromDate, parseIsoDate } from '@/src/utils/dates';
 
 export default function TransactionDetailScreen() {
@@ -30,6 +31,7 @@ export default function TransactionDetailScreen() {
   const bump = useDataStore((state) => state.bump);
   const [item, setItem] = useState<TransactionListItem | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [editing, setEditing] = useState(false);
 
@@ -38,10 +40,11 @@ export default function TransactionDetailScreen() {
       return;
     }
     const db = getDatabase();
-    const [next, files, cats] = await Promise.all([getTransaction(db, id), listAttachments(db, id), listCategories(db)]);
+    const [next, files, cats, accountRows] = await Promise.all([getTransaction(db, id), listAttachments(db, id), listCategories(db), listAccounts(db, { includeArchived: true })]);
     setItem(next);
     setAttachments(files);
     setCategories(cats);
+    setAccounts(accountRows);
   }, [id]);
 
   useFocusEffect(
@@ -115,11 +118,15 @@ export default function TransactionDetailScreen() {
         {editing ? (
           <TransactionForm
             categories={categories}
+            accounts={accounts}
             submitLabel="Lưu thay đổi"
             initial={{
               type: item.type,
               amount: item.amount,
               categoryId: item.categoryId,
+              accountId: item.accountId,
+              transferAccountId: item.transferAccountId,
+              transferFee: item.transferFee,
               description: item.description,
               occurredAt: item.occurredAt,
               attachmentUri: attachments[0]?.localUri ?? null,
@@ -133,6 +140,11 @@ export default function TransactionDetailScreen() {
             <AppText color={colors.textSecondary}>
               {item.categoryName} · {day} · {item.occurredAt.slice(11, 16)}
             </AppText>
+            {item.accountName ? (
+              <AppText variant="caption" color={colors.textMuted}>
+                {item.type === 'transfer' ? `${item.accountName} → ${item.transferAccountName ?? 'Tài khoản đích'}` : item.accountName}
+              </AppText>
+            ) : null}
             {attachments.map((attachment) => (
               <Image key={attachment.id} source={{ uri: attachment.localUri }} style={styles.image} contentFit="cover" />
             ))}

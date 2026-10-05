@@ -27,6 +27,14 @@ service cloud.firestore {
       return value is int && value > 0 && value <= 1000000000000;
     }
 
+    function validNonNegativeAmount(value) {
+      return value is int && value >= 0 && value <= 1000000000000;
+    }
+
+    function validSignedAmount(value) {
+      return value is int && value >= -1000000000000 && value <= 1000000000000;
+    }
+
     function deletedMatches(data) {
       return (data.deleted == false && data.deletedAt == null)
         || (data.deleted == true && isTime(data.deletedAt));
@@ -94,7 +102,8 @@ service cloud.firestore {
       return data.keys().hasOnly([
           'id', 'type', 'amount', 'currency', 'categoryId', 'description', 'occurredAt', 'createdAt',
           'updatedAt', 'deletedAt', 'deleted', 'revision', 'deviceId', 'schemaVersion', 'source',
-          'fingerprint', 'accountId', 'transferAccountId', 'serverUpdatedAt'
+          'fingerprint', 'accountId', 'transferAccountId', 'transferFee', 'recurringRuleId',
+          'occurrenceKey', 'serverUpdatedAt'
         ])
         && baseSync(data)
         && data.id == txId
@@ -110,14 +119,19 @@ service cloud.firestore {
         && data.source in ['manual', 'ai', 'voice', 'image', 'bank_notification', 'sheets']
         && (data.fingerprint == null || (data.fingerprint is string && data.fingerprint.size() <= 128))
         && (data.accountId == null || isId(data.accountId))
-        && (data.transferAccountId == null || isId(data.transferAccountId));
+        && (data.transferAccountId == null || isId(data.transferAccountId))
+        && (!data.keys().hasAny(['transferFee']) || validNonNegativeAmount(data.transferFee))
+        && (!data.keys().hasAny(['recurringRuleId']) || data.recurringRuleId == null || isId(data.recurringRuleId))
+        && (!data.keys().hasAny(['occurrenceKey']) || data.occurrenceKey == null
+          || (data.occurrenceKey is string && data.occurrenceKey.size() <= 160));
     }
 
     function validCategory(categoryId) {
       let data = request.resource.data;
       return data.keys().hasOnly([
           'id', 'name', 'icon', 'color', 'type', 'isDefault', 'sortOrder', 'createdAt',
-          'updatedAt', 'deletedAt', 'deleted', 'revision', 'deviceId', 'schemaVersion', 'serverUpdatedAt'
+          'updatedAt', 'deletedAt', 'deleted', 'revision', 'deviceId', 'schemaVersion',
+          'serverUpdatedAt'
         ])
         && baseSync(data)
         && data.id == categoryId
@@ -142,7 +156,8 @@ service cloud.firestore {
       let data = request.resource.data;
       return data.keys().hasOnly([
           'id', 'categoryId', 'amount', 'period', 'effectiveDate', 'createdAt',
-          'updatedAt', 'deletedAt', 'deleted', 'revision', 'deviceId', 'schemaVersion', 'serverUpdatedAt'
+          'updatedAt', 'deletedAt', 'deleted', 'revision', 'deviceId', 'schemaVersion',
+          'serverUpdatedAt', 'warningThreshold1', 'warningThreshold2'
         ])
         && baseSync(data)
         && data.id == budgetId
@@ -151,7 +166,14 @@ service cloud.firestore {
         && data.period == 'month'
         && (data.categoryId == null || isId(data.categoryId))
         && isTime(data.effectiveDate)
-        && isTime(data.createdAt);
+        && isTime(data.createdAt)
+        && ((!data.keys().hasAny(['warningThreshold1', 'warningThreshold2']))
+          || (data.keys().hasAll(['warningThreshold1', 'warningThreshold2'])
+            && data.warningThreshold1 is int
+            && data.warningThreshold2 is int
+            && data.warningThreshold1 > 0
+            && data.warningThreshold1 < data.warningThreshold2
+            && data.warningThreshold2 <= 100000));
     }
 
     function validSettings(settingId) {
@@ -169,8 +191,9 @@ service cloud.firestore {
     function validAccount(accountId) {
       let data = request.resource.data;
       return data.keys().hasOnly([
-          'id', 'name', 'type', 'bankCode', 'last4', 'updatedAt', 'deletedAt', 'deleted',
-          'revision', 'deviceId', 'schemaVersion', 'serverUpdatedAt'
+          'id', 'name', 'type', 'bankCode', 'last4', 'maskedIdentifier', 'currency',
+          'openingBalance', 'openingBalanceDate', 'archivedAt', 'displayOrder', 'createdAt',
+          'updatedAt', 'deletedAt', 'deleted', 'revision', 'deviceId', 'schemaVersion', 'serverUpdatedAt'
         ])
         && baseSync(data)
         && data.id == accountId
@@ -178,9 +201,19 @@ service cloud.firestore {
         && data.name is string
         && data.name.size() > 0
         && data.name.size() <= 80
-        && data.type in ['cash', 'bank', 'ewallet']
+        && data.type in ['cash', 'bank', 'ewallet', 'other']
         && (data.bankCode == null || (data.bankCode is string && data.bankCode.size() <= 20))
-        && (data.last4 == null || (data.last4 is string && data.last4.matches('^\\d{4}$')));
+        && (!data.keys().hasAny(['last4']) || data.last4 == null
+          || (data.last4 is string && data.last4.matches('^\\d{4}$')))
+        && (!data.keys().hasAny(['maskedIdentifier']) || data.maskedIdentifier == null
+          || (data.maskedIdentifier is string && data.maskedIdentifier.size() <= 40))
+        && (!data.keys().hasAny(['currency']) || data.currency == 'VND')
+        && (!data.keys().hasAny(['openingBalance']) || validSignedAmount(data.openingBalance))
+        && (!data.keys().hasAny(['openingBalanceDate']) || isTime(data.openingBalanceDate))
+        && (!data.keys().hasAny(['archivedAt']) || data.archivedAt == null || isTime(data.archivedAt))
+        && (!data.keys().hasAny(['displayOrder'])
+          || (data.displayOrder is int && data.displayOrder >= 0 && data.displayOrder <= 100000))
+        && (!data.keys().hasAny(['createdAt']) || isTime(data.createdAt));
     }
   }
 }

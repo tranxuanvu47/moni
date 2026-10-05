@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 
@@ -8,6 +8,7 @@ import { StackHeader } from '@/src/components/ui/Header';
 import { CategoryPicker } from '@/src/components/ui/Pickers';
 import { getDatabase } from '@/src/database/expo-client';
 import { listCategories } from '@/src/database/repositories/categories';
+import { matchCategorizationRule, upsertCategorizationRule } from '@/src/database/repositories/categorization-rules';
 import { addAttachment, createTransaction } from '@/src/database/repositories/transactions';
 import { parseExpenseInput } from '@/src/features/ai/parse-pipeline';
 import { describeAiError } from '@/src/services/ai/errors';
@@ -18,7 +19,6 @@ import { colors, radius } from '@/src/theme/tokens';
 import type { Category } from '@/src/types/finance';
 import { combineDateAndTime, formatIsoDate } from '@/src/utils/dates';
 import { findAmount, formatVnd } from '@/src/utils/money';
-import { useEffect } from 'react';
 
 export default function PreviewScreen() {
   const drafts = useDraftStore((state) => state.drafts);
@@ -32,6 +32,7 @@ export default function PreviewScreen() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [busy, setBusy] = useState(false);
   const [amountText, setAmountText] = useState<Record<string, string>>({});
+  const [learnDrafts, setLearnDrafts] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     listCategories(getDatabase()).then(setCategories).catch(() => undefined);
@@ -58,6 +59,13 @@ export default function PreviewScreen() {
             description: draft.description,
             occurredAt: combineDateAndTime(draft.date, new Date()),
           });
+          if (learnDrafts[draft.id] && draft.description.trim()) {
+            await upsertCategorizationRule(db, {
+              matchKind: 'user_defined',
+              pattern: draft.description,
+              categoryId: draft.categoryId,
+            });
+          }
           if (draft.attachmentUri) {
             await addAttachment(db, { transactionId: created.id, localUri: draft.attachmentUri, mimeType: 'image/jpeg' });
           }
@@ -77,7 +85,7 @@ export default function PreviewScreen() {
   async function askAi() {
     const config = await getAiRuntimeConfig();
     if (!config) {
-      Alert.alert('Trợ lý AI', 'Bản build chưa có khóa AI. Điền src/config/ai.local.ts rồi build lại.');
+      Alert.alert('Trợ lý AI', 'Hãy thêm khóa AI trong Cài đặt → Trợ lý AI.');
       return;
     }
     setBusy(true);
@@ -88,6 +96,7 @@ export default function PreviewScreen() {
         allowAi: true,
         forceAi: true,
         ai: { parseExpenseText: parseExpenseWithAi },
+        matchCategoryRule: (input) => matchCategorizationRule(getDatabase(), input),
         describeError: describeAiError,
       });
       setResult(result.drafts, result.notice ?? null, result.source, sourceText);
@@ -133,8 +142,16 @@ export default function PreviewScreen() {
               categories={categories}
               type={draft.type}
               selectedId={draft.categoryId}
-              onSelect={(category) => updateDraft(draft.id, { categoryId: category.id, categoryName: category.name, categoryUncertain: false, type: category.type === 'income' ? 'income' : draft.type })}
+              onSelect={(category) => {
+                updateDraft(draft.id, { categoryId: category.id, categoryName: category.name, categoryUncertain: false, type: category.type === 'income' ? 'income' : draft.type });
+                setLearnDrafts((current) => ({ ...current, [draft.id]: true }));
+              }}
             />
+            {learnDrafts[draft.id] ? (
+              <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: true }} onPress={() => setLearnDrafts((current) => ({ ...current, [draft.id]: false }))}>
+                <AppText variant="caption" color={colors.incomeText}>✓ Ghi nhớ mô tả này cho lần sau</AppText>
+              </Pressable>
+            ) : null}
             <View style={styles.dateActions}>
               <Pressable onPress={() => shiftDate(draft.id, draft.date, -1, updateDraft)}>
                 <AppText color={colors.primary}>Hôm trước</AppText>

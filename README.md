@@ -1,81 +1,142 @@
-# Mono
+# AiTiMan Moni
 
-Ứng dụng ghi chi tiêu cá nhân, tiếng Việt, tiền VND. Dữ liệu nằm trên máy. Trợ lý AI là tùy chọn.
+AiTiMan Moni là ứng dụng quản lý chi tiêu cá nhân mobile-first, viết bằng Expo/React Native. App ưu tiên dùng được khi offline: SQLite là nguồn dữ liệu thao tác chính trên máy, còn Firebase/Firestore, Google Sheets và AI là các lớp tích hợp tùy chọn.
 
-## Chạy trên máy
+## Tính năng chính
+
+- Tổng quan tháng: tổng chi, thu nhập, dòng tiền, ngân sách, xu hướng chi theo ngày, hạng mục chi nhiều nhất và giao dịch gần đây.
+- Giao dịch: thêm/sửa/xóa chi tiêu, thu nhập, chuyển khoản nội bộ; tìm kiếm, lọc, phân trang và xem chi tiết giao dịch.
+- Tài khoản/ví: nhiều tài khoản, số dư tính từ số dư đầu kỳ, ledger giao dịch và khoản điều chỉnh đối soát.
+- Hũ chi tiêu: ngân sách tổng và ngân sách theo hạng mục, ngưỡng cảnh báo/giới hạn tùy chỉnh, cảnh báo khi gần hoặc vượt hũ.
+- Smart Inbox: nhận diện thông báo ngân hàng trên Android, đưa giao dịch vào hộp chờ để người dùng kiểm tra trước khi xác nhận.
+- Giao dịch định kỳ: daily/weekly/monthly/yearly, chế độ tự động hoặc chỉ nhắc, chống tạo trùng bằng occurrence key.
+- Quy tắc phân loại: ưu tiên rule local trước AI để gợi ý hạng mục ổn định hơn.
+- Thống kê: xem theo ngày/tuần/tháng/năm, pie chart hạng mục, danh sách hạng mục và drill-down giao dịch trong từng hạng mục.
+- Đồng bộ đám mây: Firebase Authentication + Firestore, outbox local, soft delete, cursor incremental và kiểm tra quyền owner.
+- Google Sheets: nhập/đồng bộ dữ liệu qua OAuth client ID cấu hình trong source local.
+- AI: phân tích text/voice, gợi ý insight chi tiêu và phân tích sâu theo từng hũ. API key được cấu hình trong codebase local trước khi build.
+
+## Yêu cầu
+
+- Node.js và npm.
+- Expo SDK 57 (`expo ~57.0.26`).
+- JDK/Android SDK nếu build Android local.
+- Firebase project đã bật Authentication và Firestore nếu dùng đồng bộ.
+- Các file cấu hình local/key ở phần bên dưới.
+
+## Cài đặt sau khi lấy source
 
 ```bash
 npm install
-npx expo start
 ```
 
-Bản này dùng module native (SQLite, camera, micro, thông báo). Expo Go có thể thiếu một số module của SDK 57. Để cài lên điện thoại Android, hãy build APK ở dưới.
+Tạo các file local từ file mẫu:
 
-Kiểm tra mã:
+```powershell
+copy src\config\ai.local.example.ts src\config\ai.local.ts
+copy src\config\firebase.local.example.ts src\config\firebase.local.ts
+copy src\config\google.local.example.ts src\config\google.local.ts
+```
+
+Sau đó điền các giá trị thật:
+
+- `src/config/ai.local.ts`: `aiApiKey` cho ShopAIKey/OpenAI-compatible endpoint. Key này được bundle vào bản build, không nhập trên máy Android.
+- `src/config/firebase.local.ts`: `webClientId` của Firebase Authentication, dùng cho Google Sign-In. Đây là Web client ID, không phải Android client ID.
+- `src/config/google.local.ts`: `androidClientId` và `iosClientId` cho Google Sheets OAuth. Không điền client secret vào app.
+- `google-services.json`: tải từ Firebase console và đặt ở thư mục gốc project.
+- `.env`: hiện chỉ có `.env.example` để ghi chú; không đặt AI key ở đây.
+
+Các file local/key trên đã nằm trong `.gitignore`, không commit lên Git.
+
+## Chạy app
+
+```bash
+npm run start
+```
+
+App dùng SQLite, Firebase native, audio/camera, notification listener và các module native khác, vì vậy Expo Go không đủ cho toàn bộ tính năng. Dùng development build hoặc APK local khi kiểm thử trên Android thật.
+
+## Build Android
+
+Nếu dùng native Android project đã generate trên máy:
+
+```powershell
+cd android
+.\gradlew.bat assembleRelease
+```
+
+APK release nằm tại:
+
+```text
+android/app/build/outputs/apk/release/
+```
+
+Không commit keystore, service-account key, `google-services.json` thật hoặc file local key.
+
+## Kiểm tra chất lượng
 
 ```bash
 npm test
-npx tsc --noEmit
+npm run lint
+npm run typecheck
+npx expo-doctor
 ```
 
-## Cài APK trên máy
+Theo quy ước project, trước khi hoàn tất thay đổi nên chạy lint và typecheck.
 
-Bản này dùng module native (SQLite, Firebase, camera). Không chạy trong Expo Go và không cần EAS.
+## Đồng bộ Firebase
 
-```bash
-npm install
-npx expo prebuild --platform android
-cd android
-.\gradlew.bat assembleDebug
+1. Bật Email/Password và Google Sign-In trong Firebase Authentication.
+2. Tải `google-services.json` cho Android app đúng package.
+3. Điền `src/config/firebase.local.ts`.
+4. Deploy `firestore.rules` và `firestore.indexes.json`.
+5. Đăng nhập lại trong app nếu gặp lỗi permission-denied sau khi đổi project/rules.
+
+Firestore chỉ là lớp đồng bộ. SQLite local vẫn là nguồn dữ liệu thao tác khi offline.
+
+## Google Sheets
+
+1. Tạo OAuth client ID cho Android/iOS trong Google Cloud.
+2. Với Android, cấu hình đúng package name và SHA-1 của bản build.
+3. Điền client ID vào `src/config/google.local.ts`.
+4. Build lại app để `app.config.ts` gắn redirect scheme:
+
+```text
+com.googleusercontent.apps.<client-id>:/oauth2redirect
 ```
 
-APK debug nằm ở `android/app/build/outputs/apk/debug/`. Gói Android: `com.aitiman.moni`.
+Không dùng client secret trong mobile app.
 
-`google-services.json` ở thư mục gốc là cấu hình client của project `aitiman-moni`. Không nhét service account hay private key vào app.
+## AI và quyền riêng tư
 
-## Firebase
+AI key được đọc từ `src/config/ai.local.ts` qua `src/services/ai/secure-config.ts`. Sau khi đổi key cần build lại app để bản Android nhận cấu hình mới.
 
-1. Firebase Console, project `aitiman-moni`: bật Authentication → Email/Password. Google Sign-In cần thêm SHA-1.
-2. Lấy SHA-1 sau khi prebuild: `cd android` rồi `.\gradlew.bat signingReport`. Dán SHA-1 và SHA-256 vào app Android `com.aitiman.moni`, tải lại `google-services.json`.
-3. Copy Web client ID (loại Web, không phải Android client) vào `src/config/firebase.local.ts`, rồi build lại.
-4. Firestore Standard, database `(default)`, region `asia-southeast1` nếu chọn được. Dán `firestore.rules` vào tab Rules, hoặc `npx firebase-tools deploy --only firestore:rules,firestore:indexes`.
-5. Rules chỉ cho `request.auth.uid` đọc `users/{uid}`. Không dùng `allow read, write: if true`.
-6. Đăng nhập lần đầu trên máy đã có giao dịch sẽ hỏi trước khi tải dữ liệu lên. Tài khoản khác không được nhận sổ của máy này.
-7. Ảnh hóa đơn vẫn ở máy. Cloud Storage chưa bật. ShopAIKey giữ nguyên, không đưa vào cấu hình Firebase.
+AI chỉ nhận dữ liệu cần thiết cho từng tác vụ:
 
-Hạn mức Spark (đọc 50.000 / ghi 20.000 document mỗi ngày) đủ cho sổ cá nhân nếu không lắng nghe cả collection mỗi lần mở app. App chỉ kéo document có `updatedAt` mới hơn mốc lần kéo trước.
+- Parse giao dịch từ text/voice: gửi nội dung người dùng nhập hoặc bản ghi âm đã chuyển chữ.
+- Insight chi tiêu: gửi dữ liệu tổng hợp như tổng chi, thu nhập, hạng mục top, số giao dịch và trạng thái hũ.
+- Smart Inbox ngân hàng: giao dịch không chắc chắn được đưa vào hộp chờ để người dùng kiểm tra trước khi lưu.
 
-## Quyền
+Không đưa service-account key, client secret hoặc private key vào app mobile.
 
-- Micro: chỉ khi bạn bấm ghi âm.
-- Camera và thư viện ảnh: chỉ khi đính kèm ảnh.
-- Thông báo: chỉ khi bật nhắc nhở hoặc cảnh báo ngân sách.
+## File key cần backup riêng
 
-Ảnh được chép vào thư mục của ứng dụng. Không tự tải lên.
+Các file này cần cập nhật lại sau khi clone source mới:
 
-## AI
+```text
+src/config/ai.local.ts
+src/config/firebase.local.ts
+src/config/google.local.ts
+google-services.json
+.env nếu môi trường riêng có dùng
+```
 
-Khóa không nhập trên từng máy Android. Sao chép `src/config/ai.local.example.ts` thành `src/config/ai.local.ts`, dán khóa ShopAIKey vào `aiApiKey`, rồi build lại. File này bị git bỏ qua. Khóa sẽ nằm trong APK.
+Trong workspace này, bản backup zip local được tạo tại `local-secrets.zip`. File zip này bị Git ignore và chỉ dùng để chuyển riêng ngoài repository.
 
-URL mặc định: `https://api.shopaikey.com/v1`.
+## Giới hạn hiện tại
 
-Model phân tích: `gpt-4o-mini`. Model giọng nói: `whisper-1`. Cả hai khai báo trong `src/config/ai.ts`. Câu đơn giản như “ăn sáng 35k” được tách trên máy. AI chỉ được gọi khi còn khoản chưa rõ, hoặc khi bạn bấm “Nhờ AI đọc lại” / “Giải thích thêm”.
+- Ảnh hóa đơn vẫn lưu local; cloud storage/OCR chưa là luồng chính.
+- Không có kết nối bank API trực tiếp; Android notification listener phụ thuộc quyền hệ thống và hành vi từng hãng máy.
+- AI hỗ trợ phân tích/gợi ý, không tự xác nhận giao dịch và không thay người dùng quyết định tài chính.
 
-Giọng nói cần mạng. App không giả vờ nhận dạng giọng nói khi ngoại tuyến.
-
-Khóa lưu trên máy không thay cho một backend giữ bí mật. Trước khi gửi ghi âm hoặc số liệu tổng hợp, hãy xem điều khoản của nhà cung cấp.
-
-Xem thêm `.env.example`.
-
-## Phạm vi đã làm
-
-- Nhập, sửa, xóa giao dịch offline, lưu SQLite, còn sau khi mở lại app.
-- Tách câu tiếng Việt trên máy, có bước kiểm tra trước khi lưu.
-- AI, giọng nói và giải thích chỉ khi đã cấu hình.
-- Ảnh từ camera hoặc thư viện, nén và lưu local.
-- Thống kê ngày / tuần / tháng / năm từ dữ liệu thật.
-- Ngân sách tháng, ngân sách hạng mục, nhắc local.
-- Xuất / nhập CSV, xóa dữ liệu, không có giao dịch mẫu.
-- Đồng bộ Firestore theo tài khoản Firebase. SQLite vẫn là sổ local. Google Sheets chỉ còn lệnh nhập một lần, không còn là đường đồng bộ đang chạy.
-
-Chưa làm: Cloud Storage cho ảnh, OCR hóa đơn, listener thông báo ngân hàng, phát hành Play Store hoặc App Store.
+Xem thêm [SECURITY.md](./SECURITY.md).

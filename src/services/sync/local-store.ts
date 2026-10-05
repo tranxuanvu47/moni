@@ -22,13 +22,24 @@ interface SyncRow {
   fingerprint?: string | null;
   account_id?: string | null;
   transfer_account_id?: string | null;
+  transfer_fee?: number;
+  recurring_rule_id?: string | null;
+  occurrence_key?: string | null;
   name?: string;
+  bank_code?: string | null;
+  masked_identifier?: string | null;
+  opening_balance?: number;
+  opening_balance_date?: string;
+  archived_at?: string | null;
+  display_order?: number;
   icon?: string;
   color?: string;
   is_default?: number;
   sort_order?: number;
   period?: string;
   effective_date?: string;
+  warning_threshold_bps?: number;
+  limit_threshold_bps?: number;
   value?: string;
 }
 
@@ -37,7 +48,8 @@ const preferenceList = SYNCED_PREFERENCE_KEYS.map(() => '?').join(', ');
 export async function listLocalRecords(db: DatabaseClient): Promise<CanonicalRecord[]> {
   const transactions = await db.all<SyncRow>(
     `SELECT id, type, amount, currency, category_id, description, occurred_at, created_at, updated_at, deleted_at,
-            revision, synced_revision, device_id, sync_status, source, fingerprint, account_id, transfer_account_id
+            revision, synced_revision, device_id, sync_status, source, fingerprint, account_id, transfer_account_id,
+            transfer_fee, recurring_rule_id, occurrence_key
      FROM transactions`,
   );
   const categories = await db.all<SyncRow>(
@@ -45,9 +57,15 @@ export async function listLocalRecords(db: DatabaseClient): Promise<CanonicalRec
             revision, synced_revision, device_id, sync_status
      FROM categories`,
   );
+  const accounts = await db.all<SyncRow>(
+    `SELECT id, name, type, bank_code, masked_identifier, currency, opening_balance, opening_balance_date,
+            archived_at, display_order, created_at, updated_at, deleted_at,
+            revision, synced_revision, device_id, sync_status
+     FROM accounts`,
+  );
   const budgets = await db.all<SyncRow>(
     `SELECT id, category_id, amount, period, effective_date, created_at, updated_at, deleted_at,
-            revision, synced_revision, device_id, sync_status
+            revision, synced_revision, device_id, sync_status, warning_threshold_bps, limit_threshold_bps
      FROM budgets`,
   );
   const settings = await db.all<SyncRow>(
@@ -72,6 +90,24 @@ export async function listLocalRecords(db: DatabaseClient): Promise<CanonicalRec
         fingerprint: row.fingerprint ?? '',
         account_id: row.account_id ?? '',
         transfer_account_id: row.transfer_account_id ?? '',
+        transfer_fee: String(row.transfer_fee ?? 0),
+        recurring_rule_id: row.recurring_rule_id ?? '',
+        occurrence_key: row.occurrence_key ?? '',
+      }),
+    ),
+    ...accounts.map((row) =>
+      toRecord('accounts', row, {
+        name: row.name ?? '',
+        type: row.type ?? '',
+        bank_code: row.bank_code ?? '',
+        masked_identifier: row.masked_identifier ?? '',
+        currency: row.currency ?? 'VND',
+        opening_balance: String(row.opening_balance ?? 0),
+        opening_balance_date: row.opening_balance_date ?? '',
+        archived_at: row.archived_at ?? '',
+        display_order: String(row.display_order ?? 0),
+        created_at: row.created_at ?? '',
+        deleted_at: row.deleted_at ?? '',
       }),
     ),
     ...categories.map((row) =>
@@ -94,6 +130,8 @@ export async function listLocalRecords(db: DatabaseClient): Promise<CanonicalRec
         effective_date: row.effective_date ?? '',
         created_at: row.created_at ?? '',
         deleted_at: row.deleted_at ?? '',
+        warning_threshold_bps: String(row.warning_threshold_bps ?? 8000),
+        limit_threshold_bps: String(row.limit_threshold_bps ?? 10000),
       }),
     ),
     ...settings.map((row) =>
@@ -137,8 +175,9 @@ export async function applyRemoteRecord(db: DatabaseClient, record: CanonicalRec
     await db.run(
       `INSERT INTO transactions (
          id, type, amount, currency, category_id, description, occurred_at, created_at, updated_at, deleted_at,
-         revision, synced_revision, device_id, sync_status, source, fingerprint, account_id, transfer_account_id
-       ) VALUES (?, ?, ?, 'VND', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?)
+         revision, synced_revision, device_id, sync_status, source, fingerprint, account_id, transfer_account_id,
+         transfer_fee, recurring_rule_id, occurrence_key
+       ) VALUES (?, ?, ?, 'VND', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          type = excluded.type,
          amount = excluded.amount,
@@ -154,8 +193,11 @@ export async function applyRemoteRecord(db: DatabaseClient, record: CanonicalRec
          sync_status = 'synced',
          source = excluded.source,
          fingerprint = excluded.fingerprint,
-         account_id = excluded.account_id,
-         transfer_account_id = excluded.transfer_account_id`,
+          account_id = excluded.account_id,
+          transfer_account_id = excluded.transfer_account_id,
+          transfer_fee = excluded.transfer_fee,
+          recurring_rule_id = excluded.recurring_rule_id,
+          occurrence_key = excluded.occurrence_key`,
       [
         record.id,
         record.fields.type,
@@ -173,6 +215,9 @@ export async function applyRemoteRecord(db: DatabaseClient, record: CanonicalRec
         emptyToNull(record.fields.fingerprint),
         emptyToNull(record.fields.account_id),
         emptyToNull(record.fields.transfer_account_id),
+        Number(record.fields.transfer_fee ?? '0'),
+        emptyToNull(record.fields.recurring_rule_id),
+        emptyToNull(record.fields.occurrence_key),
       ],
     );
   } else if (record.entity === 'categories') {
@@ -210,16 +255,60 @@ export async function applyRemoteRecord(db: DatabaseClient, record: CanonicalRec
         record.deviceId,
       ],
     );
+  } else if (record.entity === 'accounts') {
+    await db.run(
+      `INSERT INTO accounts (
+         id, name, type, bank_code, masked_identifier, currency, opening_balance, opening_balance_date,
+         archived_at, display_order, created_at, updated_at, deleted_at,
+         revision, synced_revision, device_id, sync_status
+       ) VALUES (?, ?, ?, ?, ?, 'VND', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         type = excluded.type,
+         bank_code = excluded.bank_code,
+         masked_identifier = excluded.masked_identifier,
+         currency = excluded.currency,
+         opening_balance = excluded.opening_balance,
+         opening_balance_date = excluded.opening_balance_date,
+         archived_at = excluded.archived_at,
+         display_order = excluded.display_order,
+         created_at = excluded.created_at,
+         updated_at = excluded.updated_at,
+         deleted_at = excluded.deleted_at,
+         revision = excluded.revision,
+         synced_revision = excluded.synced_revision,
+         device_id = excluded.device_id,
+         sync_status = 'synced'`,
+      [
+        record.id,
+        record.fields.name,
+        record.fields.type,
+        emptyToNull(record.fields.bank_code),
+        emptyToNull(record.fields.masked_identifier),
+        Number(record.fields.opening_balance),
+        record.fields.opening_balance_date,
+        emptyToNull(record.fields.archived_at),
+        Number(record.fields.display_order),
+        record.fields.created_at,
+        record.updatedAt,
+        emptyToNull(record.fields.deleted_at),
+        record.revision,
+        record.revision,
+        record.deviceId,
+      ],
+    );
   } else if (record.entity === 'budgets') {
     await db.run(
       `INSERT INTO budgets (
          id, category_id, amount, period, effective_date, created_at, updated_at, deleted_at,
-         revision, synced_revision, device_id, sync_status
-       ) VALUES (?, ?, ?, 'month', ?, ?, ?, ?, ?, ?, ?, 'synced')
+         revision, synced_revision, device_id, sync_status, warning_threshold_bps, limit_threshold_bps
+       ) VALUES (?, ?, ?, 'month', ?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          category_id = excluded.category_id,
          amount = excluded.amount,
-         effective_date = excluded.effective_date,
+          effective_date = excluded.effective_date,
+          warning_threshold_bps = excluded.warning_threshold_bps,
+          limit_threshold_bps = excluded.limit_threshold_bps,
          updated_at = excluded.updated_at,
          deleted_at = excluded.deleted_at,
          revision = excluded.revision,
@@ -237,6 +326,8 @@ export async function applyRemoteRecord(db: DatabaseClient, record: CanonicalRec
         record.revision,
         record.revision,
         record.deviceId,
+        Number(record.fields.warning_threshold_bps ?? '8000'),
+        Number(record.fields.limit_threshold_bps ?? '10000'),
       ],
     );
   } else {
@@ -272,6 +363,7 @@ export async function acknowledgeRecord(db: DatabaseClient, entity: SyncEntityNa
   const sql = {
     transactions: 'UPDATE transactions SET sync_status = \'synced\', revision = ?, synced_revision = ? WHERE id = ?',
     categories: 'UPDATE categories SET sync_status = \'synced\', revision = ?, synced_revision = ? WHERE id = ?',
+    accounts: 'UPDATE accounts SET sync_status = \'synced\', revision = ?, synced_revision = ? WHERE id = ?',
     budgets: 'UPDATE budgets SET sync_status = \'synced\', revision = ?, synced_revision = ? WHERE id = ?',
     settings: 'UPDATE preferences SET sync_status = \'synced\', revision = ?, synced_revision = ? WHERE key = ?',
   }[entity];
@@ -298,6 +390,7 @@ export async function saveConflict(
   const sql = {
     transactions: "UPDATE transactions SET sync_status = 'conflict' WHERE id = ?",
     categories: "UPDATE categories SET sync_status = 'conflict' WHERE id = ?",
+    accounts: "UPDATE accounts SET sync_status = 'conflict' WHERE id = ?",
     budgets: "UPDATE budgets SET sync_status = 'conflict' WHERE id = ?",
     settings: "UPDATE preferences SET sync_status = 'conflict' WHERE key = ?",
   }[local.entity];
@@ -373,6 +466,8 @@ async function removeLocalRecord(db: DatabaseClient, local: CanonicalRecord): Pr
     await db.run('DELETE FROM categories WHERE id = ?', [local.id]);
   } else if (local.entity === 'budgets') {
     await db.run('DELETE FROM budgets WHERE id = ?', [local.id]);
+  } else if (local.entity === 'accounts') {
+    await db.run('DELETE FROM accounts WHERE id = ?', [local.id]);
   } else {
     await db.run('DELETE FROM preferences WHERE key = ?', [local.id]);
   }
@@ -407,6 +502,15 @@ async function stampPending(
   if (local.entity === 'budgets') {
     await db.run(
       `UPDATE budgets
+       SET revision = ?, synced_revision = ?, sync_status = 'pending', updated_at = ?, device_id = ?
+       WHERE id = ?`,
+      [revision, syncedRevision, now, local.deviceId, local.id],
+    );
+    return;
+  }
+  if (local.entity === 'accounts') {
+    await db.run(
+      `UPDATE accounts
        SET revision = ?, synced_revision = ?, sync_status = 'pending', updated_at = ?, device_id = ?
        WHERE id = ?`,
       [revision, syncedRevision, now, local.deviceId, local.id],

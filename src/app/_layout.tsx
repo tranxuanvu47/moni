@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
-import { Stack } from 'expo-router';
+import { Stack, router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import * as Notifications from 'expo-notifications';
 import * as SplashScreen from 'expo-splash-screen';
 import { useFonts } from 'expo-font';
 import { Inter_400Regular } from '@expo-google-fonts/inter/400Regular';
@@ -12,13 +13,17 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { BiometricUnlock } from '@/src/components/auth/BiometricUnlock';
 import { AppText } from '@/src/components/ui/AppText';
 import { Button } from '@/src/components/ui/Button';
-import { initDatabase } from '@/src/database/expo-client';
+import { getDatabase, initDatabase } from '@/src/database/expo-client';
 import { migrate } from '@/src/database/migrate';
+import { materializeRecurringTransactions } from '@/src/database/repositories/recurring';
 import { AuthSessionProvider, useAuthSession } from '@/src/providers/auth-session';
 import { startBankNotificationRuntime } from '@/src/services/bank/runtime';
+import { syncInboxBadgeCount } from '@/src/services/notifications/inbox-alerts';
 import { startSyncRuntime } from '@/src/services/sync/runtime';
 import { syncScheduledReminders } from '@/src/services/notifications/reminders';
+import { useDataStore } from '@/src/store/app-store';
 import { colors } from '@/src/theme/tokens';
+import { formatIsoDate, localDateFromDate } from '@/src/utils/dates';
 
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
@@ -33,7 +38,8 @@ export function ErrorBoundary({ error, retry }: { error: Error; retry: () => voi
 }
 
 export default function RootLayout() {
-  const [fontsLoaded] = useFonts({ Inter_400Regular, Inter_500Medium, Inter_600SemiBold });
+  const revision = useDataStore((state) => state.revision);
+  const [fontsLoaded, fontError] = useFonts({ Inter_400Regular, Inter_500Medium, Inter_600SemiBold });
   const [ready, setReady] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -48,15 +54,22 @@ export default function RootLayout() {
       if (cancelled) {
         return;
       }
+
       setReady(true);
+      await syncInboxBadgeCount(db).catch(() => undefined);
+      // Keep startup lean: render from local SQLite first, then refresh derived/background data.
+      stopBank = startBankNotificationRuntime();
 
       void (async () => {
+        const created = await materializeRecurringTransactions(db, formatIsoDate(localDateFromDate(new Date()))).catch(() => []);
+        if (created.length > 0) {
+          useDataStore.getState().bump();
+        }
         await syncScheduledReminders().catch(() => undefined);
         if (cancelled) {
           return;
         }
         stopSync = startSyncRuntime();
-        stopBank = startBankNotificationRuntime();
       })();
     }
 
@@ -72,10 +85,27 @@ export default function RootLayout() {
   }, []);
 
   useEffect(() => {
-    if (fontsLoaded && (ready || message)) {
+    if (!ready) {
+      return;
+    }
+    syncInboxBadgeCount(getDatabase()).catch(() => undefined);
+  }, [ready, revision]);
+
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      const url = response.notification.request.content.data?.url;
+      if (url === '/settings/inbox') {
+        router.push('/settings/inbox');
+      }
+    });
+    return () => subscription.remove();
+  }, []);
+
+  useEffect(() => {
+    if (fontsLoaded || fontError) {
       SplashScreen.hideAsync().catch(() => undefined);
     }
-  }, [fontsLoaded, ready, message]);
+  }, [fontError, fontsLoaded]);
 
   if (message) {
     return (
@@ -86,10 +116,11 @@ export default function RootLayout() {
     );
   }
 
-  if (!fontsLoaded || !ready) {
+  if ((!fontsLoaded && !fontError) || !ready) {
     return (
       <View style={styles.center}>
         <ActivityIndicator color={colors.primary} />
+        <AppText variant="caption" color={colors.textMuted}>Đang mở sổ chi tiêu</AppText>
       </View>
     );
   }
@@ -138,13 +169,18 @@ function RootNavigator() {
         <Stack.Screen name="transaction/camera" options={{ presentation: 'fullScreenModal' }} />
         <Stack.Screen name="transaction/[id]" />
         <Stack.Screen name="settings/account" />
+        <Stack.Screen name="settings/accounts" />
+        <Stack.Screen name="settings/inbox" />
         <Stack.Screen name="settings/budget" />
         <Stack.Screen name="settings/reminders" />
         <Stack.Screen name="settings/bank-notifications" />
         <Stack.Screen name="settings/ai" />
         <Stack.Screen name="settings/categories" />
+        <Stack.Screen name="settings/recurring" />
+        <Stack.Screen name="settings/categorization-rules" />
         <Stack.Screen name="settings/privacy" />
         <Stack.Screen name="settings/sync" />
+        <Stack.Screen name="account/[id]" />
       </Stack.Protected>
 
       <Stack.Protected guard={!signedIn}>

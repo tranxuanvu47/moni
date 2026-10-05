@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { Alert, AppState, Platform, ScrollView, StyleSheet, Switch, View } from 'react-native';
+import * as Notifications from 'expo-notifications';
 import { useFocusEffect } from 'expo-router';
 
 import { AppText } from '@/src/components/ui/AppText';
@@ -10,6 +11,7 @@ import { getDatabase } from '@/src/database/expo-client';
 import { getPreference, preferenceKeys, setPreference } from '@/src/database/repositories/preferences';
 import { BANK_PACKAGE_LABELS } from '@/src/features/bank/packages';
 import { bankListenerAvailability, getNativeBankListener } from '@/src/services/bank/native-listener';
+import { ensureInboxNotificationChannel } from '@/src/services/notifications/inbox-alerts';
 import { colors } from '@/src/theme/tokens';
 
 export default function BankNotificationsScreen() {
@@ -57,6 +59,11 @@ export default function BankNotificationsScreen() {
         );
         return;
       }
+      await ensureInboxNotificationChannel().catch(() => undefined);
+      const current = await Notifications.getPermissionsAsync();
+      if (!current.granted) {
+        await Notifications.requestPermissionsAsync();
+      }
     }
     setEnabled(value);
     await setPreference(getDatabase(), preferenceKeys.bankNotificationsEnabled, value ? '1' : '0');
@@ -69,12 +76,12 @@ export default function BankNotificationsScreen() {
       <StackHeader title="Thông báo ngân hàng" />
       <ScrollView contentContainerStyle={styles.content}>
         <AppText>
-          Khi bật, app đọc thông báo từ app ngân hàng hoặc tin nhắn trên Android, tách số tiền và lưu giao dịch vào sổ máy. OTP và thông báo không có số tiền sẽ bị bỏ qua. iOS không cho đọc thông báo app khác.
+          Khi bật, ứng dụng đọc thông báo từ ngân hàng hoặc ví trên Android, tách số tiền trên máy và đưa giao dịch vào Hộp chờ. Chỉ khi bạn xác nhận, giao dịch mới được ghi vào sổ. OTP và thông báo không có số tiền bị bỏ qua. iOS không cho đọc thông báo ứng dụng khác.
         </AppText>
         {availability.reason ? <AppText color={colors.expense}>{availability.reason}</AppText> : null}
         <Card style={styles.card}>
           <View style={styles.row}>
-            <AppText style={styles.flex}>Tự lưu giao dịch từ thông báo</AppText>
+            <AppText style={styles.flex}>Đưa giao dịch vào Hộp chờ</AppText>
             <Switch
               value={enabled}
               onValueChange={(value) => void toggle(value)}

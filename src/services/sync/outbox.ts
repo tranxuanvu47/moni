@@ -54,6 +54,7 @@ export async function ensurePendingQueued(db: DatabaseClient, now: string): Prom
   const tables: Array<{ entity: SyncEntityName; table: string; idColumn: string; where: string }> = [
     { entity: 'transactions', table: 'transactions', idColumn: 'id', where: "sync_status = 'pending'" },
     { entity: 'categories', table: 'categories', idColumn: 'id', where: "sync_status = 'pending'" },
+    { entity: 'accounts', table: 'accounts', idColumn: 'id', where: "sync_status = 'pending'" },
     { entity: 'budgets', table: 'budgets', idColumn: 'id', where: "sync_status = 'pending'" },
     {
       entity: 'settings',
@@ -85,6 +86,7 @@ export async function countPending(db: DatabaseClient): Promise<number> {
     `SELECT
        (SELECT COUNT(*) FROM transactions WHERE sync_status = 'pending')
        + (SELECT COUNT(*) FROM categories WHERE sync_status = 'pending')
+       + (SELECT COUNT(*) FROM accounts WHERE sync_status = 'pending')
        + (SELECT COUNT(*) FROM budgets WHERE sync_status = 'pending')
        + (SELECT COUNT(*) FROM preferences WHERE sync_status = 'pending' AND key IN ('reminder_enabled', 'reminder_hour', 'reminder_minute', 'weekly_recap_enabled', 'budget_alert_enabled'))
        AS total`,

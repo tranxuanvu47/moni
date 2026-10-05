@@ -5,19 +5,26 @@ export const colors = {
   primarySoft: '#DCE9E1',
   text: '#232824',
   textSecondary: '#777F79',
+  textMuted: '#626A64',
   expense: '#C36C60',
+  expenseText: '#9B4D44',
+  expenseSoft: '#F7ECE9',
   income: '#4C8B70',
+  incomeText: '#356A53',
   divider: '#E7EAE5',
+  surfaceMuted: '#F1F4F0',
+  warningSoft: '#F4EEDC',
+  warningText: '#745B24',
   overlay: 'rgba(35, 40, 36, 0.45)',
 } as const;
 
 export const spacing = {
   xs: 4,
   sm: 8,
-  md: 16,
-  lg: 24,
-  xl: 32,
-  xxl: 48,
+  md: 12,
+  lg: 16,
+  xl: 24,
+  xxl: 32,
 } as const;
 
 export const radius = {

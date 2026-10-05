@@ -18,7 +18,36 @@ const COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/;
 const MAX_AMOUNT = 1_000_000_000_000;
 const MAX_TEXT = 500;
 
-const TEXT_FIELDS = new Set(['description', 'name', 'value', 'icon']);
+const TEXT_FIELDS = new Set(['description', 'name', 'value', 'icon', 'bank_code', 'masked_identifier']);
+
+const LEGACY_HEADERS: Partial<Record<SyncEntityName, readonly string[]>> = {
+  transactions: [
+    'id',
+    'type',
+    'amount',
+    'currency',
+    'category_id',
+    'description',
+    'occurred_at',
+    'created_at',
+    'updated_at',
+    'deleted_at',
+    'revision',
+    'device_id',
+  ],
+  budgets: [
+    'id',
+    'category_id',
+    'amount',
+    'period',
+    'effective_date',
+    'created_at',
+    'updated_at',
+    'deleted_at',
+    'revision',
+    'device_id',
+  ],
+};
 
 export function businessEqual(entity: SyncEntityName, left: Record<string, string>, right: Record<string, string>): boolean {
   return BUSINESS_FIELDS[entity].every((key) => (left[key] ?? '') === (right[key] ?? ''));
@@ -50,7 +79,7 @@ export function parseSnapshot(
   }
   const header = snapshot.header.length > 0 ? snapshot.header : [...HEADERS[ENTITY_SHEETS[entity]]];
   const expected = HEADERS[ENTITY_SHEETS[entity]];
-  if (!sameHeader(header, expected)) {
+  if (!sameHeader(header, expected) && !sameExactHeader(header, LEGACY_HEADERS[entity])) {
     return { records: [], skipped: snapshot.rows.length };
   }
 
@@ -104,11 +133,16 @@ function parseRow(entity: SyncEntityName, header: readonly string[], row: string
       fields[column] = text.text;
       continue;
     }
+    if (column === 'opening_balance' && /^-?\d+$/.test(cell)) {
+      fields[column] = cell;
+      continue;
+    }
     if (readSpreadsheetText(cell).ok === false) {
       return null;
     }
     fields[column] = cell;
   }
+  applyAdditiveDefaults(entity, fields);
 
   const revision = readRevision(raw.revision ?? '');
   if (!revision) {
@@ -147,7 +181,10 @@ function validBusiness(entity: SyncEntityName, id: string, fields: Record<string
       validSource(fields.source) &&
       validFingerprint(fields.fingerprint) &&
       validOptionalId(fields.account_id) &&
-      validOptionalId(fields.transfer_account_id)
+      validOptionalId(fields.transfer_account_id) &&
+      validNonNegativeAmount(fields.transfer_fee ?? '') &&
+      validOptionalId(fields.recurring_rule_id) &&
+      validOptionalKey(fields.occurrence_key)
     );
   }
   if (entity === 'categories') {
@@ -162,11 +199,34 @@ function validBusiness(entity: SyncEntityName, id: string, fields: Record<string
     );
   }
   if (entity === 'budgets') {
+    const warning = Number(fields.warning_threshold_bps);
+    const limit = Number(fields.limit_threshold_bps);
     return (
       validAmount(fields.amount ?? '') &&
       fields.period === 'month' &&
       (fields.category_id === '' || ID_PATTERN.test(fields.category_id ?? '')) &&
       TIME_PATTERN.test(fields.effective_date ?? '') &&
+      TIME_PATTERN.test(fields.created_at ?? '') &&
+      validOptionalTime(fields.deleted_at ?? '') &&
+      Number.isInteger(warning) &&
+      Number.isInteger(limit) &&
+      warning > 0 &&
+      warning < limit &&
+      limit <= 100_000
+    );
+  }
+  if (entity === 'accounts') {
+    return (
+      (fields.name ?? '').trim().length > 0 &&
+      (fields.name ?? '').length <= 80 &&
+      (fields.type === 'cash' || fields.type === 'bank' || fields.type === 'ewallet' || fields.type === 'other') &&
+      (fields.bank_code ?? '').length <= 20 &&
+      (fields.masked_identifier ?? '').length <= 40 &&
+      fields.currency === 'VND' &&
+      validSignedAmount(fields.opening_balance ?? '') &&
+      TIME_PATTERN.test(fields.opening_balance_date ?? '') &&
+      validOptionalTime(fields.archived_at ?? '') &&
+      validNonNegativeInteger(fields.display_order ?? '', 100_000) &&
       TIME_PATTERN.test(fields.created_at ?? '') &&
       validOptionalTime(fields.deleted_at ?? '')
     );
@@ -182,6 +242,30 @@ function validAmount(value: string): boolean {
   return amount > 0 && amount <= MAX_AMOUNT;
 }
 
+function validNonNegativeAmount(value: string): boolean {
+  if (!/^\d+$/.test(value)) {
+    return false;
+  }
+  const amount = Number(value);
+  return Number.isSafeInteger(amount) && amount >= 0 && amount <= MAX_AMOUNT;
+}
+
+function validSignedAmount(value: string): boolean {
+  if (!/^-?\d+$/.test(value)) {
+    return false;
+  }
+  const amount = Number(value);
+  return Number.isSafeInteger(amount) && Math.abs(amount) <= MAX_AMOUNT;
+}
+
+function validNonNegativeInteger(value: string, max: number): boolean {
+  if (!/^\d+$/.test(value)) {
+    return false;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed <= max;
+}
+
 function validOptionalTime(value: string): boolean {
   return value === '' || TIME_PATTERN.test(value);
 }
@@ -192,6 +276,10 @@ function validOptionalId(value: string | undefined): boolean {
 
 function validFingerprint(value: string | undefined): boolean {
   return !value || /^[A-Za-z0-9_-]{1,128}$/.test(value);
+}
+
+function validOptionalKey(value: string | undefined): boolean {
+  return !value || value.length <= 160;
 }
 
 function validSource(value: string | undefined): boolean {
@@ -214,6 +302,25 @@ function sameHeader(actual: readonly string[], expected: readonly string[]): boo
     return false;
   }
   return expected.every((column, index) => actual[index] === column);
+}
+
+function sameExactHeader(actual: readonly string[], expected: readonly string[] | undefined): boolean {
+  return Boolean(expected && actual.length === expected.length && expected.every((column, index) => actual[index] === column));
+}
+
+function applyAdditiveDefaults(entity: SyncEntityName, fields: Record<string, string>): void {
+  if (entity === 'transactions') {
+    fields.source ||= 'manual';
+    fields.fingerprint ??= '';
+    fields.account_id ??= '';
+    fields.transfer_account_id ??= '';
+    fields.transfer_fee ||= '0';
+    fields.recurring_rule_id ??= '';
+    fields.occurrence_key ??= '';
+  } else if (entity === 'budgets') {
+    fields.warning_threshold_bps ||= '8000';
+    fields.limit_threshold_bps ||= '10000';
+  }
 }
 
 function collapseDuplicates(records: CanonicalRecord[]): { records: CanonicalRecord[]; dropped: number } {

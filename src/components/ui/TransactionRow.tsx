@@ -9,8 +9,15 @@ import type { TransactionListItem } from '@/src/types/finance';
 import { formatTime } from '@/src/utils/dates';
 
 function TransactionRowComponent({ item, onPress }: { item: TransactionListItem; onPress: (id: string) => void }) {
+  const amountPrefix = item.type === 'expense' ? 'chi' : item.type === 'income' ? 'thu' : 'chuyển';
   return (
-    <Pressable accessibilityRole="button" onPress={() => onPress(item.id)} style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${item.description || item.categoryName}, ${item.categoryName}, ${formatTime(item.occurredAt)}, ${amountPrefix} ${Math.abs(item.amount)} đồng`}
+      accessibilityHint="Mở chi tiết giao dịch"
+      onPress={() => onPress(item.id)}
+      style={({ pressed }) => [styles.row, pressed && styles.pressed]}
+    >
       <View style={styles.icon}>
         <AppIcon name={item.categoryIcon} size={18} color={item.categoryColor} />
       </View>
@@ -38,9 +45,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
     paddingVertical: 12,
+    minHeight: 60,
   },
   pressed: {
     opacity: 0.7,
+    transform: [{ scale: 0.99 }],
   },
   icon: {
     width: 36,

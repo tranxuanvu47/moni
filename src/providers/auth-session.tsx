@@ -61,7 +61,8 @@ export function AuthSessionProvider({ children }: PropsWithChildren) {
   }, []);
 
   useEffect(() => {
-    void refresh();
+    const task = setTimeout(() => void refresh(), 0);
+    return () => clearTimeout(task);
   }, [refresh]);
 
   const markUnlocked = useCallback(() => {

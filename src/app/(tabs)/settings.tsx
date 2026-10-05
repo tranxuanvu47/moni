@@ -1,49 +1,46 @@
-import { Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import type { ReactNode } from 'react';
+import { useCallback, useState } from 'react';
+import { Alert, ScrollView, StyleSheet, View } from 'react-native';
 import Constants from 'expo-constants';
 import { File } from 'expo-file-system';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
 
 import { AppText } from '@/src/components/ui/AppText';
-import { Button } from '@/src/components/ui/Button';
-import { Card } from '@/src/components/ui/Card';
 import { Header } from '@/src/components/ui/Header';
-import { AppIcon } from '@/src/components/ui/Icon';
+import { SettingsRow } from '@/src/components/ui/SettingsRow';
 import { getDatabase } from '@/src/database/expo-client';
 import { clearUserData } from '@/src/database/repositories/transactions';
-import { deleteImage } from '@/src/services/images/attachments';
-import { exportTransactions, importTransactions } from '@/src/services/export/backup';
-import { hasApiKey } from '@/src/services/ai/secure-config';
 import { useAuthSession } from '@/src/providers/auth-session';
-import { readSyncSession } from '@/src/services/sync/runtime';
+import { hasApiKey } from '@/src/services/ai/secure-config';
+import { exportTransactions, importTransactions } from '@/src/services/export/backup';
+import { deleteImage } from '@/src/services/images/attachments';
+import { readSyncSession, type SyncSession } from '@/src/services/sync/runtime';
 import { useDataStore } from '@/src/store/app-store';
-import { colors } from '@/src/theme/tokens';
-
-const rows = [
-  { href: '/settings/account' as const, label: 'Tài khoản & vân tay', icon: 'user' },
-  { href: '/settings/budget' as const, label: 'Ngân sách tháng', icon: 'wallet' },
-  { href: '/settings/reminders' as const, label: 'Nhắc nhở', icon: 'bell' },
-  { href: '/settings/bank-notifications' as const, label: 'Thông báo ngân hàng', icon: 'smartphone' },
-  { href: '/settings/ai' as const, label: 'Trợ lý AI', icon: 'key-round' },
-  { href: '/settings/categories' as const, label: 'Hạng mục', icon: 'list' },
-  { href: '/settings/privacy' as const, label: 'Quyền riêng tư', icon: 'shield' },
-  { href: '/settings/sync' as const, label: 'Đồng bộ đám mây', icon: 'cloud' },
-];
+import { colors, radius } from '@/src/theme/tokens';
 
 export default function SettingsScreen() {
   const bump = useDataStore((state) => state.bump);
   const { email: authEmail, signOut } = useAuthSession();
-  const [email, setEmail] = useState<string | null>(authEmail);
-  const [aiReady, setAiReady] = useState(false);
+  const [session, setSession] = useState<SyncSession | null>(null);
+  const [aiReady, setAiReady] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
-      hasApiKey().then(setAiReady).catch(() => setAiReady(false));
-      readSyncSession()
-        .then((session) => setEmail(session.email ?? authEmail))
-        .catch(() => setEmail(authEmail));
-    }, [authEmail]),
+      let active = true;
+      Promise.all([hasApiKey(), readSyncSession()])
+        .then(([nextAiReady, nextSession]) => {
+          if (!active) return;
+          setAiReady(nextAiReady);
+          setSession(nextSession);
+        })
+        .catch(() => {
+          if (active) setAiReady(false);
+        });
+      return () => {
+        active = false;
+      };
+    }, []),
   );
 
   async function exportCsv() {
@@ -57,11 +54,8 @@ export default function SettingsScreen() {
   async function importCsv() {
     try {
       const picked = await File.pickFileAsync({ mimeTypes: ['text/csv', 'text/comma-separated-values', 'text/plain', 'text/*'] });
-      if (picked.canceled || !picked.result) {
-        return;
-      }
-      const csv = await picked.result.text();
-      const result = await importTransactions(getDatabase(), csv);
+      if (picked.canceled || !picked.result) return;
+      const result = await importTransactions(getDatabase(), await picked.result.text());
       bump();
       Alert.alert('Nhập dữ liệu', `Đã nhập ${result.imported} giao dịch. Bỏ qua ${result.skipped}.`);
     } catch (error) {
@@ -99,102 +93,95 @@ export default function SettingsScreen() {
         onPress: () => {
           setBusy(true);
           void signOut()
-            .catch((error: unknown) => {
-              Alert.alert('Cài đặt', error instanceof Error ? error.message : 'Không đăng xuất được.');
-            })
+            .catch((error: unknown) => Alert.alert('Cài đặt', error instanceof Error ? error.message : 'Không đăng xuất được.'))
             .finally(() => setBusy(false));
         },
       },
     ]);
   }
 
+  const email = session?.email ?? authEmail;
+
   return (
     <View style={styles.screen}>
       <Header title="Cài đặt" />
-      <ScrollView contentContainerStyle={styles.content}>
-        <Card style={styles.card}>
-          <View style={styles.info}>
-            <AppText variant="caption" color={colors.textSecondary}>Tài khoản đang dùng</AppText>
-            <AppText variant="bodyMedium">{email ?? '—'}</AppText>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <View style={styles.accountSummary} accessible accessibilityLabel={`Tài khoản đang dùng ${email ?? 'chưa xác định'}`}>
+          <View style={styles.accountCopy}>
+            <AppText variant="caption" color={colors.textMuted}>Tài khoản đang dùng</AppText>
+            <AppText variant="bodyMedium" numberOfLines={1}>{email ?? 'Chưa xác định'}</AppText>
           </View>
-          <View style={[styles.logoutWrap, styles.border]}>
-            <Button label="Đăng xuất" variant="secondary" disabled={busy} onPress={logout} />
-          </View>
-        </Card>
+          <AppText variant="caption" color={syncColor(session)}>{syncSummary(session)}</AppText>
+        </View>
 
-        <Card style={styles.card}>
-          {rows.map((row, index) => (
-            <Pressable key={row.href} style={[styles.row, index > 0 && styles.border]} onPress={() => router.push(row.href)}>
-              <AppIcon name={row.icon} color={colors.primary} />
-              <AppText style={styles.flex}>{row.label}</AppText>
-              {row.href === '/settings/ai' ? (
-                <AppText variant="caption" color={colors.textSecondary}>
-                  {aiReady ? 'Đã gắn khóa' : 'Chưa có khóa'}
-                </AppText>
-              ) : null}
-            </Pressable>
-          ))}
-        </Card>
-        <Card style={styles.card}>
-          <Pressable style={styles.row} onPress={() => void exportCsv()}>
-            <AppIcon name="download" color={colors.primary} />
-            <AppText>Xuất CSV</AppText>
-          </Pressable>
-          <Pressable style={[styles.row, styles.border]} onPress={() => void importCsv()}>
-            <AppIcon name="upload" color={colors.primary} />
-            <AppText>Nhập bản sao lưu CSV</AppText>
-          </Pressable>
-          <Pressable style={[styles.row, styles.border]} onPress={erase}>
-            <AppIcon name="trash" color={colors.expense} />
-            <AppText color={colors.expense}>Xóa toàn bộ dữ liệu</AppText>
-          </Pressable>
-        </Card>
-        <AppText variant="caption" color={colors.textSecondary}>
-          Tiền tệ mặc định: VND
-        </AppText>
-        <AppText variant="caption" color={colors.textSecondary}>
-          Phiên bản {Constants.expoConfig?.version ?? '1.0.0'}
-        </AppText>
+        <SettingsGroup title="Tài chính">
+          <SettingsRow label="Tài khoản & ví" icon="wallet" onPress={() => router.push('/settings/accounts')} />
+          <SettingsRow label="Ngân sách" icon="wallet" onPress={() => router.push('/settings/budget')} />
+          <SettingsRow label="Hạng mục" icon="list" onPress={() => router.push('/settings/categories')} />
+          <SettingsRow label="Giao dịch định kỳ" icon="calendar" onPress={() => router.push('/settings/recurring' as never)} />
+        </SettingsGroup>
+
+        <SettingsGroup title="Tự động hóa">
+          <SettingsRow label="Thông báo ngân hàng" icon="smartphone" onPress={() => router.push('/settings/bank-notifications')} />
+          <SettingsRow label="Trợ lý AI" icon="key-round" detail={aiReady == null ? 'Đang kiểm tra' : aiReady ? 'Sẵn sàng' : 'Chưa cấu hình'} onPress={() => router.push('/settings/ai')} />
+          <SettingsRow label="Quy tắc phân loại" icon="list" onPress={() => router.push('/settings/categorization-rules' as never)} />
+          <SettingsRow label="Nhắc nhở" icon="bell" onPress={() => router.push('/settings/reminders')} />
+        </SettingsGroup>
+
+        <SettingsGroup title="Dữ liệu">
+          <SettingsRow label="Đồng bộ Firebase" icon="cloud" detail={syncSummary(session)} onPress={() => router.push('/settings/sync')} />
+          <SettingsRow label="Xuất CSV" icon="download" showChevron={false} onPress={() => void exportCsv()} />
+          <SettingsRow label="Nhập CSV" icon="upload" showChevron={false} onPress={() => void importCsv()} />
+        </SettingsGroup>
+
+        <SettingsGroup title="Ứng dụng">
+          <SettingsRow label="Đăng nhập & bảo mật" icon="user" onPress={() => router.push('/settings/account')} />
+          <SettingsRow label="Quyền riêng tư" icon="shield" onPress={() => router.push('/settings/privacy')} />
+          <SettingsRow label="Phiên bản" icon="smartphone" detail={Constants.expoConfig?.version ?? '1.0.0'} showChevron={false} />
+        </SettingsGroup>
+
+        <View style={styles.destructive}>
+          <SettingsRow label="Đăng xuất" icon="user" detail={busy ? 'Đang đăng xuất' : null} destructive showChevron={false} onPress={busy ? undefined : logout} />
+          <SettingsRow label="Xóa toàn bộ dữ liệu" icon="trash" destructive showChevron={false} onPress={erase} />
+        </View>
       </ScrollView>
     </View>
   );
 }
 
+function SettingsGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <View style={styles.group}>
+      <AppText variant="label" color={colors.textMuted}>{title}</AppText>
+      <View style={styles.rows}>{children}</View>
+    </View>
+  );
+}
+
+function syncSummary(session: SyncSession | null): string {
+  if (!session) return 'Đang kiểm tra';
+  if (session.lastError) return 'Cần kiểm tra';
+  if (!session.enabled || !session.email) return 'Chưa bật';
+  if (session.pendingTransactions > 0) return `${session.pendingTransactions} thay đổi đang chờ`;
+  if (session.lastSuccessAt) {
+    const time = new Date(session.lastSuccessAt);
+    if (!Number.isNaN(time.getTime())) return `Đã đồng bộ ${time.toLocaleDateString('vi-VN')}`;
+  }
+  return 'Sẵn sàng đồng bộ';
+}
+
+function syncColor(session: SyncSession | null): string {
+  if (session?.lastError) return colors.expenseText;
+  if (session?.enabled && session.email) return colors.incomeText;
+  return colors.textMuted;
+}
+
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  content: {
-    paddingHorizontal: 20,
-    paddingBottom: 32,
-    gap: 16,
-  },
-  card: {
-    padding: 0,
-  },
-  info: {
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    gap: 4,
-  },
-  logoutWrap: {
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-    paddingTop: 12,
-  },
-  row: {
-    minHeight: 52,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  border: {
-    borderTopWidth: 1,
-    borderTopColor: colors.divider,
-  },
-  flex: {
-    flex: 1,
-  },
+  screen: { flex: 1, backgroundColor: colors.background },
+  content: { paddingHorizontal: 20, paddingBottom: 40, gap: 24 },
+  accountSummary: { minHeight: 68, backgroundColor: colors.surfaceMuted, borderRadius: radius.lg, paddingHorizontal: 14, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  accountCopy: { flex: 1, gap: 3 },
+  group: { gap: 6 },
+  rows: { borderTopWidth: 1, borderTopColor: colors.divider },
+  destructive: { marginTop: 8, borderTopWidth: 1, borderTopColor: colors.divider, paddingTop: 8 },
 });

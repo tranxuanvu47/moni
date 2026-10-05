@@ -16,7 +16,7 @@ export default function PrivacyScreen() {
           Nếu bật nhớ mật khẩu hoặc mở khóa bằng vân tay / Face ID, thông tin cần thiết được lưu trong kho bảo mật của máy để đăng nhập lại nhanh. Bạn có thể tắt bất cứ lúc nào trong Tài khoản.
         </AppText>
         <AppText>
-          Tính năng thông báo ngân hàng (Android) chỉ đọc thông báo từ các app ngân hàng/ví đã lọc khi bạn cấp quyền truy cập thông báo. OTP bị bỏ qua. Nội dung không được gửi lên máy chủ chỉ để lưu giao dịch trên máy.
+          Tính năng thông báo ngân hàng (Android) chỉ đọc thông báo từ các ứng dụng ngân hàng và ví đã lọc khi bạn cấp quyền. OTP bị bỏ qua. Thông báo được phân tích trên máy và đưa vào Hộp chờ để bạn xác nhận.
         </AppText>
         <AppText>
           Ảnh đính kèm được chép vào thư mục của ứng dụng. Ảnh không được tải lên trừ khi một tính năng sau này được bạn bật riêng.
@@ -28,7 +28,7 @@ export default function PrivacyScreen() {
           Khi bạn bấm tách câu chưa rõ, ghi âm, hoặc “Giải thích thêm”, máy gửi đúng phần cần thiết tới địa chỉ API bạn đã cấu hình. Ghi âm không được nhận dạng khi máy ngoại tuyến.
         </AppText>
         <AppText>
-          Khóa API được gắn lúc build từ project. Người có file APK có thể tách khóa ra. Chỉ cài bản này cho máy của bạn.
+          Khóa API do bạn tự nhập được lưu trong kho bảo mật của thiết bị, không đóng gói trong APK. Ứng dụng không tự gửi toàn bộ thông báo ngân hàng sang AI.
         </AppText>
         <AppText color={colors.textSecondary}>Bạn có thể xuất CSV, nhập lại bản sao lưu, hoặc xóa toàn bộ dữ liệu trong Cài đặt.</AppText>
       </ScrollView>

@@ -11,6 +11,8 @@ interface BudgetRow {
   amount: number;
   period: 'month';
   effective_date: string;
+  warning_threshold_bps: number;
+  limit_threshold_bps: number;
 }
 
 export async function listBudgets(db: DatabaseClient): Promise<Budget[]> {
@@ -37,25 +39,49 @@ export async function getActiveBudget(db: DatabaseClient, categoryId: string | n
 
 export async function upsertMonthlyBudget(
   db: DatabaseClient,
-  input: { categoryId: string | null; amount: number; effectiveDate: string },
+  input: {
+    categoryId: string | null;
+    amount: number;
+    effectiveDate: string;
+    warningThresholdBps?: number;
+    limitThresholdBps?: number;
+  },
 ): Promise<void> {
+  const warningThresholdBps = input.warningThresholdBps ?? 8000;
+  const limitThresholdBps = input.limitThresholdBps ?? 10000;
+  if (
+    !Number.isSafeInteger(input.amount) ||
+    input.amount <= 0 ||
+    !Number.isInteger(warningThresholdBps) ||
+    !Number.isInteger(limitThresholdBps) ||
+    warningThresholdBps <= 0 ||
+    warningThresholdBps >= limitThresholdBps
+  ) {
+    throw new Error('Ngân sách hoặc ngưỡng cảnh báo không hợp lệ.');
+  }
   const now = toLocalDateTime(new Date());
   const deviceId = await getDeviceId(db);
   const existing = input.categoryId
     ? await db.get<{ id: string }>(
-        `SELECT id FROM budgets WHERE category_id = ? AND period = 'month' AND deleted_at IS NULL ORDER BY effective_date DESC LIMIT 1`,
-        [input.categoryId],
+        `SELECT id FROM budgets
+         WHERE category_id = ? AND period = 'month' AND effective_date = ? AND deleted_at IS NULL
+         LIMIT 1`,
+        [input.categoryId, input.effectiveDate],
       )
     : await db.get<{ id: string }>(
-        `SELECT id FROM budgets WHERE category_id IS NULL AND period = 'month' AND deleted_at IS NULL ORDER BY effective_date DESC LIMIT 1`,
+        `SELECT id FROM budgets
+         WHERE category_id IS NULL AND period = 'month' AND effective_date = ? AND deleted_at IS NULL
+         LIMIT 1`,
+        [input.effectiveDate],
       );
 
   if (existing) {
     await db.run(
       `UPDATE budgets
-       SET amount = ?, effective_date = ?, updated_at = ?, revision = revision + 1, sync_status = 'pending', device_id = ?
+       SET amount = ?, warning_threshold_bps = ?, limit_threshold_bps = ?, updated_at = ?,
+           revision = revision + 1, sync_status = 'pending', device_id = ?
        WHERE id = ?`,
-      [input.amount, input.effectiveDate, now, deviceId, existing.id],
+      [input.amount, warningThresholdBps, limitThresholdBps, now, deviceId, existing.id],
     );
     const row = await db.get<{ revision: number }>('SELECT revision FROM budgets WHERE id = ?', [existing.id]);
     await noteLocalChange(db, 'budgets', existing.id, row?.revision ?? 1, now);
@@ -66,9 +92,9 @@ export async function upsertMonthlyBudget(
   await db.run(
     `INSERT INTO budgets (
        id, category_id, amount, period, effective_date, created_at, updated_at, deleted_at,
-       revision, synced_revision, device_id, sync_status
-     ) VALUES (?, ?, ?, 'month', ?, ?, ?, NULL, 1, 0, ?, 'pending')`,
-    [id, input.categoryId, input.amount, input.effectiveDate, now, now, deviceId],
+       revision, synced_revision, device_id, sync_status, warning_threshold_bps, limit_threshold_bps
+     ) VALUES (?, ?, ?, 'month', ?, ?, ?, NULL, 1, 0, ?, 'pending', ?, ?)`,
+    [id, input.categoryId, input.amount, input.effectiveDate, now, now, deviceId, warningThresholdBps, limitThresholdBps],
   );
   await noteLocalChange(db, 'budgets', id, 1, now);
 }
@@ -95,5 +121,7 @@ function mapBudget(row: BudgetRow): Budget {
     amount: row.amount,
     period: 'month',
     effectiveDate: row.effective_date,
+    warningThresholdBps: row.warning_threshold_bps,
+    limitThresholdBps: row.limit_threshold_bps,
   };
 }

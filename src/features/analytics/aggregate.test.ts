@@ -42,6 +42,8 @@ describe('ngân sách', () => {
     expect(evaluateBudget(80_000, 100_000).level).toBe('warning');
     expect(evaluateBudget(120_000, 100_000).level).toBe('exceeded');
     expect(evaluateBudget(10_000, null).level).toBe('unset');
+    expect(evaluateBudget(75_000, 100_000, 0.7, 0.9).level).toBe('warning');
+    expect(evaluateBudget(95_000, 100_000, 0.7, 0.9).level).toBe('exceeded');
   });
 
   it('không gửi trùng cảnh báo trong tháng', () => {

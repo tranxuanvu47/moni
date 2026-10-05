@@ -6,6 +6,7 @@ import { isRetryableSyncError, SyncHttpError, type SheetRowUpdate, type SheetSna
 const SHEET_ORDER: DataSheetName[] = [
   SHEET_NAMES.transactions,
   SHEET_NAMES.categories,
+  SHEET_NAMES.accounts,
   SHEET_NAMES.budgets,
   SHEET_NAMES.settings,
   SHEET_NAMES.metadata,
@@ -171,6 +172,15 @@ async function ensureHeaders(client: GoogleSheetsClient, spreadsheetId: string, 
       return;
     }
     const matches = expected.every((column, columnIndex) => header[columnIndex] === column);
+    const legacyLength = sheet === SHEET_NAMES.transactions ? 12 : sheet === SHEET_NAMES.budgets ? 10 : expected.length;
+    const canExtend =
+      header.length >= legacyLength &&
+      header.length < expected.length &&
+      header.every((column, columnIndex) => expected[columnIndex] === column);
+    if (canExtend) {
+      writes.push({ range: headerRange(sheet), values: [expected] });
+      return;
+    }
     if (!matches) {
       throw new Error('Cột trên Google Sheets không khớp. Giữ nguyên hàng tiêu đề của Mono Finance Data.');
     }

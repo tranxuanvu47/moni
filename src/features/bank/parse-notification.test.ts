@@ -41,7 +41,7 @@ describe('parseBankNotification', () => {
     });
     expect(parsed?.type).toBe('expense');
     expect(parsed?.amount).toBe(1_000_000);
-    expect(parsed?.description).toContain('1.000.000');
+    expect(parsed?.description).not.toContain('1.000.000');
     expect(parsed?.description).toContain('TRAN XUAN VU');
     expect(parsed?.description.length).toBeLessThanOrEqual(400);
   });
@@ -75,5 +75,15 @@ describe('parseBankNotification', () => {
         text: 'Ma OTP 123456 de dang nhap. Khong chia se OTP.',
       }),
     ).toBeNull();
+  });
+
+  it('vẫn lưu giao dịch khi NH nhắc đăng nhập app để xem chi tiết', () => {
+    const parsed = parseBankNotification({
+      packageName: 'com.tpb.mb.gprsandroid',
+      text: '(TPBank): TK: xxxx2384798 PS: -200.000 SD: 1.000.000 ND: Cafe ABC SO GD: 99 Vui long dang nhap ung dung de xem chi tiet',
+      key: 'tpb-login-hint',
+    });
+    expect(parsed?.amount).toBe(200_000);
+    expect(parsed?.type).toBe('expense');
   });
 });

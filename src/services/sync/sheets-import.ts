@@ -5,7 +5,7 @@ import { getDeviceId } from '@/src/services/sync/device';
 import { noteLocalChange } from '@/src/services/sync/outbox';
 import type { CanonicalRecord, SheetSnapshot } from '@/src/services/sync/types';
 
-const ORDER: SyncEntityName[] = ['categories', 'settings', 'budgets', 'transactions'];
+const ORDER: SyncEntityName[] = ['categories', 'settings', 'accounts', 'budgets', 'transactions'];
 
 export interface MoneyTotals {
   count: number;
@@ -121,8 +121,9 @@ async function importOne(db: DatabaseClient, record: CanonicalRecord, deviceId: 
     await db.run(
       `INSERT INTO transactions (
          id, type, amount, currency, category_id, description, occurred_at, created_at, updated_at, deleted_at,
-         revision, synced_revision, device_id, sync_status, source, fingerprint, account_id, transfer_account_id
-       ) VALUES (?, ?, ?, 'VND', ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?, ?, ?)`,
+         revision, synced_revision, device_id, sync_status, source, fingerprint, account_id, transfer_account_id,
+         transfer_fee, recurring_rule_id, occurrence_key
+       ) VALUES (?, ?, ?, 'VND', ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
       [
         record.id,
         record.fields.type,
@@ -139,6 +140,9 @@ async function importOne(db: DatabaseClient, record: CanonicalRecord, deviceId: 
         fingerprint,
         record.fields.account_id || null,
         record.fields.transfer_account_id || null,
+        Number(record.fields.transfer_fee ?? '0'),
+        record.fields.recurring_rule_id || null,
+        record.fields.occurrence_key || null,
       ],
     );
   } else if (record.entity === 'categories') {
@@ -162,12 +166,36 @@ async function importOne(db: DatabaseClient, record: CanonicalRecord, deviceId: 
         deviceId,
       ],
     );
+  } else if (record.entity === 'accounts') {
+    await db.run(
+      `INSERT INTO accounts (
+         id, name, type, bank_code, masked_identifier, currency, opening_balance, opening_balance_date,
+         archived_at, display_order, created_at, updated_at, deleted_at,
+         revision, synced_revision, device_id, sync_status
+       ) VALUES (?, ?, ?, ?, ?, 'VND', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending')`,
+      [
+        record.id,
+        record.fields.name,
+        record.fields.type,
+        record.fields.bank_code || null,
+        record.fields.masked_identifier || null,
+        Number(record.fields.opening_balance),
+        record.fields.opening_balance_date,
+        record.fields.archived_at || null,
+        Number(record.fields.display_order),
+        record.fields.created_at,
+        record.updatedAt,
+        record.fields.deleted_at || null,
+        record.revision,
+        deviceId,
+      ],
+    );
   } else if (record.entity === 'budgets') {
     await db.run(
       `INSERT INTO budgets (
          id, category_id, amount, period, effective_date, created_at, updated_at, deleted_at,
-         revision, synced_revision, device_id, sync_status
-       ) VALUES (?, ?, ?, 'month', ?, ?, ?, ?, ?, 0, ?, 'pending')`,
+         revision, synced_revision, device_id, sync_status, warning_threshold_bps, limit_threshold_bps
+       ) VALUES (?, ?, ?, 'month', ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?)`,
       [
         record.id,
         record.fields.category_id || null,
@@ -178,6 +206,8 @@ async function importOne(db: DatabaseClient, record: CanonicalRecord, deviceId: 
         record.fields.deleted_at || null,
         record.revision,
         deviceId,
+        Number(record.fields.warning_threshold_bps ?? '8000'),
+        Number(record.fields.limit_threshold_bps ?? '10000'),
       ],
     );
   } else {

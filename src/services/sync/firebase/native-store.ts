@@ -214,7 +214,7 @@ async function pushRecords(uid: string, records: CanonicalRecord[], deviceId: st
       }
       result.written.push({ entity: record.entity, id: record.id, revision: record.revision });
     } catch (error) {
-      throw mapFirestoreError(error);
+      throw mapFirestoreError(error, `${record.entity}/${record.id}`);
     }
   }
   return result;
@@ -238,14 +238,14 @@ function isIndexUnavailableError(error: unknown): boolean {
   );
 }
 
-function mapFirestoreError(error: unknown): Error {
+function mapFirestoreError(error: unknown, target?: string): Error {
   if (error instanceof Error && error.message.startsWith('Bản ghi')) {
     return error;
   }
   const code = typeof error === 'object' && error && 'code' in error ? String((error as { code: unknown }).code) : '';
   const message = error instanceof Error ? error.message : '';
   if (code.includes('permission-denied')) {
-    return new Error('Không có quyền đồng bộ. Đăng nhập lại hoặc thử lại sau.');
+    return new Error(target ? `Không có quyền đồng bộ ${target}. Đăng nhập lại hoặc thử lại sau.` : 'Không có quyền đồng bộ. Đăng nhập lại hoặc thử lại sau.');
   }
   if (code.includes('unavailable') || code.includes('deadline-exceeded') || code.includes('resource-exhausted')) {
     return new SyncHttpError('Máy chủ đồng bộ đang bận. Thử lại sau ít phút.', 429, null);

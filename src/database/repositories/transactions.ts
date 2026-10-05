@@ -1,7 +1,16 @@
-import type { DatabaseClient } from '@/src/database/client';
+import type { DatabaseClient, SqlValue } from '@/src/database/client';
 import { getDeviceId } from '@/src/services/sync/device';
 import { noteLocalChange } from '@/src/services/sync/outbox';
-import type { Attachment, TransactionInput, TransactionListItem, TransactionRecord, TransactionType } from '@/src/types/finance';
+import {
+  DEFAULT_ACCOUNT_ID,
+  type Attachment,
+  type TransactionInput,
+  type TransactionListItem,
+  type TransactionRecord,
+  type TransactionSort,
+  type TransactionSource,
+  type TransactionType,
+} from '@/src/types/finance';
 import { createId, createUuid } from '@/src/utils/id';
 import { toLocalDateTime } from '@/src/utils/dates';
 
@@ -15,9 +24,18 @@ interface TransactionRow {
   occurred_at: string;
   created_at: string;
   updated_at: string;
+  source: TransactionSource;
+  fingerprint: string | null;
+  account_id: string | null;
+  transfer_account_id: string | null;
+  transfer_fee: number;
+  recurring_rule_id: string | null;
+  occurrence_key: string | null;
   category_name: string;
   category_icon: string;
   category_color: string;
+  account_name: string | null;
+  transfer_account_name: string | null;
   attachment_count: number;
 }
 
@@ -25,14 +43,33 @@ export interface TransactionQuery {
   search?: string;
   type?: TransactionType | null;
   categoryId?: string | null;
+  accountId?: string | null;
+  source?: TransactionSource | null;
   from?: string | null;
   to?: string | null;
+  minAmount?: number | null;
+  maxAmount?: number | null;
+  sort?: TransactionSort;
   limit: number;
   offset: number;
 }
 
 export async function createTransaction(db: DatabaseClient, input: TransactionInput): Promise<TransactionRecord> {
+  const normalized = await normalizeInput(db, input, null);
   const fingerprint = input.fingerprint?.trim() || null;
+  const occurrenceKey = input.occurrenceKey?.trim() || null;
+  if (occurrenceKey) {
+    const existing = await db.get<{ id: string }>(
+      'SELECT id FROM transactions WHERE occurrence_key = ? AND deleted_at IS NULL',
+      [occurrenceKey],
+    );
+    if (existing) {
+      const duplicate = await getTransaction(db, existing.id);
+      if (duplicate) {
+        return duplicate;
+      }
+    }
+  }
   if (fingerprint) {
     const existing = await db.get<{ id: string }>(
       'SELECT id FROM transactions WHERE fingerprint = ? AND deleted_at IS NULL',
@@ -49,24 +86,29 @@ export async function createTransaction(db: DatabaseClient, input: TransactionIn
   const now = toLocalDateTime(new Date());
   const id = createUuid();
   const deviceId = await getDeviceId(db);
-  const source = input.source ?? 'manual';
   await db.run(
     `INSERT INTO transactions (
        id, type, amount, currency, category_id, description, occurred_at, created_at, updated_at,
-       deleted_at, revision, synced_revision, device_id, sync_status, source, fingerprint
-     ) VALUES (?, ?, ?, 'VND', ?, ?, ?, ?, ?, NULL, 1, 0, ?, 'pending', ?, ?)`,
+       deleted_at, revision, synced_revision, device_id, sync_status, source, fingerprint,
+       account_id, transfer_account_id, transfer_fee, recurring_rule_id, occurrence_key
+     ) VALUES (?, ?, ?, 'VND', ?, ?, ?, ?, ?, NULL, 1, 0, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
-      input.type,
-      input.amount,
-      input.categoryId,
-      input.description.trim(),
-      input.occurredAt,
+      normalized.type,
+      normalized.amount,
+      normalized.categoryId,
+      normalized.description,
+      normalized.occurredAt,
       now,
       now,
       deviceId,
-      source,
+      normalized.source,
       fingerprint,
+      normalized.accountId,
+      normalized.transferAccountId,
+      normalized.transferFee,
+      normalized.recurringRuleId,
+      occurrenceKey,
     ],
   );
   await noteLocalChange(db, 'transactions', id, 1, now);
@@ -78,14 +120,36 @@ export async function createTransaction(db: DatabaseClient, input: TransactionIn
 }
 
 export async function updateTransaction(db: DatabaseClient, id: string, input: TransactionInput): Promise<void> {
+  const current = await getTransaction(db, id);
+  if (!current) {
+    throw new Error('Không tìm thấy giao dịch.');
+  }
+  const normalized = await normalizeInput(db, input, current);
   const now = toLocalDateTime(new Date());
   const deviceId = await getDeviceId(db);
   await db.run(
     `UPDATE transactions
-     SET type = ?, amount = ?, category_id = ?, description = ?, occurred_at = ?, updated_at = ?,
+     SET type = ?, amount = ?, category_id = ?, description = ?, occurred_at = ?, source = ?, fingerprint = ?,
+         account_id = ?, transfer_account_id = ?, transfer_fee = ?, recurring_rule_id = ?, occurrence_key = ?, updated_at = ?,
          revision = revision + 1, sync_status = 'pending', device_id = ?
      WHERE id = ? AND deleted_at IS NULL`,
-    [input.type, input.amount, input.categoryId, input.description.trim(), input.occurredAt, now, deviceId, id],
+    [
+      normalized.type,
+      normalized.amount,
+      normalized.categoryId,
+      normalized.description,
+      normalized.occurredAt,
+      normalized.source,
+      normalized.fingerprint,
+      normalized.accountId,
+      normalized.transferAccountId,
+      normalized.transferFee,
+      normalized.recurringRuleId,
+      normalized.occurrenceKey,
+      now,
+      deviceId,
+      id,
+    ],
   );
   const row = await db.get<{ revision: number }>('SELECT revision FROM transactions WHERE id = ? AND deleted_at IS NULL', [id]);
   if (row) {
@@ -119,7 +183,7 @@ export async function getTransaction(db: DatabaseClient, id: string): Promise<Tr
 export async function listTransactions(db: DatabaseClient, query: TransactionQuery): Promise<TransactionListItem[]> {
   const { sql, params } = buildFilter(query);
   const rows = await db.all<TransactionRow>(
-    `${LIST_SELECT} ${sql} ORDER BY t.occurred_at DESC, t.created_at DESC LIMIT ? OFFSET ?`,
+    `${LIST_SELECT} ${sql} ORDER BY ${sortSql(query.sort)} LIMIT ? OFFSET ?`,
     [...params, query.limit, query.offset],
   );
   return rows.map(mapTransaction);
@@ -219,23 +283,60 @@ export async function upsertImportedTransaction(
   input: TransactionInput & { id: string },
 ): Promise<void> {
   const existing = await db.get<{ id: string }>('SELECT id FROM transactions WHERE id = ?', [input.id]);
+  const current = existing ? await getTransaction(db, input.id) : null;
+  const normalized = await normalizeInput(db, input, current);
   const now = toLocalDateTime(new Date());
   const deviceId = await getDeviceId(db);
   if (existing) {
     await db.run(
       `UPDATE transactions
-       SET type = ?, amount = ?, category_id = ?, description = ?, occurred_at = ?, updated_at = ?,
+       SET type = ?, amount = ?, category_id = ?, description = ?, occurred_at = ?, source = ?, fingerprint = ?,
+           account_id = ?, transfer_account_id = ?, transfer_fee = ?, recurring_rule_id = ?, occurrence_key = ?, updated_at = ?,
            deleted_at = NULL, revision = revision + 1, sync_status = 'pending', device_id = ?
        WHERE id = ?`,
-      [input.type, input.amount, input.categoryId, input.description, input.occurredAt, now, deviceId, input.id],
+      [
+        normalized.type,
+        normalized.amount,
+        normalized.categoryId,
+        normalized.description,
+        normalized.occurredAt,
+        normalized.source,
+        normalized.fingerprint,
+        normalized.accountId,
+        normalized.transferAccountId,
+        normalized.transferFee,
+        normalized.recurringRuleId,
+        normalized.occurrenceKey,
+        now,
+        deviceId,
+        input.id,
+      ],
     );
   } else {
     await db.run(
       `INSERT INTO transactions (
          id, type, amount, currency, category_id, description, occurred_at, created_at, updated_at,
-         deleted_at, revision, synced_revision, device_id, sync_status
-       ) VALUES (?, ?, ?, 'VND', ?, ?, ?, ?, ?, NULL, 1, 0, ?, 'pending')`,
-      [input.id, input.type, input.amount, input.categoryId, input.description, input.occurredAt, now, now, deviceId],
+         deleted_at, revision, synced_revision, device_id, sync_status, source, fingerprint,
+         account_id, transfer_account_id, transfer_fee, recurring_rule_id, occurrence_key
+       ) VALUES (?, ?, ?, 'VND', ?, ?, ?, ?, ?, NULL, 1, 0, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.id,
+        normalized.type,
+        normalized.amount,
+        normalized.categoryId,
+        normalized.description,
+        normalized.occurredAt,
+        now,
+        now,
+        deviceId,
+        normalized.source,
+        normalized.fingerprint,
+        normalized.accountId,
+        normalized.transferAccountId,
+        normalized.transferFee,
+        normalized.recurringRuleId,
+        normalized.occurrenceKey,
+      ],
     );
   }
   const row = await db.get<{ revision: number }>('SELECT revision FROM transactions WHERE id = ?', [input.id]);
@@ -246,27 +347,39 @@ export async function clearUserData(db: DatabaseClient): Promise<string[]> {
   const files = await db.all<{ local_uri: string }>('SELECT local_uri FROM attachments');
   await db.transaction(async () => {
     await db.exec('DELETE FROM attachments');
+    await db.exec('DELETE FROM transaction_drafts');
     await db.exec('DELETE FROM transactions');
+    await db.exec('DELETE FROM account_adjustments');
+    await db.exec('DELETE FROM recurring_rules');
+    await db.exec('DELETE FROM categorization_rules');
     await db.exec('DELETE FROM budgets');
     await db.exec('DELETE FROM sync_outbox');
     await db.exec('DELETE FROM sync_conflicts');
     await db.exec('DELETE FROM preferences');
     await db.exec('DELETE FROM categories WHERE is_default = 0');
+    await db.exec(`DELETE FROM accounts WHERE id != '${DEFAULT_ACCOUNT_ID}'`);
+    await db.exec(`UPDATE accounts
+      SET opening_balance = 0, opening_balance_date = '1970-01-01', archived_at = NULL, display_order = 0
+      WHERE id = '${DEFAULT_ACCOUNT_ID}'`);
   });
   return files.map((file) => file.local_uri);
 }
 
 const LIST_SELECT = `SELECT
   t.id, t.type, t.amount, t.currency, t.category_id, t.description, t.occurred_at, t.created_at, t.updated_at,
+  t.source, t.fingerprint, t.account_id, t.transfer_account_id, t.transfer_fee, t.recurring_rule_id, t.occurrence_key,
   c.name AS category_name, c.icon AS category_icon, c.color AS category_color,
+  a.name AS account_name, ta.name AS transfer_account_name,
   (SELECT COUNT(*) FROM attachments a WHERE a.transaction_id = t.id) AS attachment_count
   FROM transactions t
   JOIN categories c ON c.id = t.category_id
+  LEFT JOIN accounts a ON a.id = t.account_id
+  LEFT JOIN accounts ta ON ta.id = t.transfer_account_id
   WHERE t.deleted_at IS NULL`;
 
-function buildFilter(query: TransactionQuery): { sql: string; params: Array<string | null> } {
+function buildFilter(query: TransactionQuery): { sql: string; params: SqlValue[] } {
   const clauses: string[] = [];
-  const params: Array<string | null> = [];
+  const params: SqlValue[] = [];
 
   if (query.type) {
     clauses.push('t.type = ?');
@@ -276,6 +389,14 @@ function buildFilter(query: TransactionQuery): { sql: string; params: Array<stri
     clauses.push('t.category_id = ?');
     params.push(query.categoryId);
   }
+  if (query.accountId) {
+    clauses.push('(t.account_id = ? OR t.transfer_account_id = ?)');
+    params.push(query.accountId, query.accountId);
+  }
+  if (query.source) {
+    clauses.push('t.source = ?');
+    params.push(query.source);
+  }
   if (query.from) {
     clauses.push('t.occurred_at >= ?');
     params.push(query.from);
@@ -284,10 +405,27 @@ function buildFilter(query: TransactionQuery): { sql: string; params: Array<stri
     clauses.push('t.occurred_at < ?');
     params.push(`${query.to}T99`);
   }
+  if (query.minAmount != null) {
+    clauses.push('t.amount >= ?');
+    params.push(query.minAmount);
+  }
+  if (query.maxAmount != null) {
+    clauses.push('t.amount <= ?');
+    params.push(query.maxAmount);
+  }
   if (query.search?.trim()) {
-    clauses.push('(t.description LIKE ? OR c.name LIKE ?)');
-    const term = `%${query.search.trim()}%`;
-    params.push(term, term);
+    clauses.push(`(
+      t.description LIKE ? ESCAPE '\\'
+      OR c.name LIKE ? ESCAPE '\\'
+      OR COALESCE(a.name, '') LIKE ? ESCAPE '\\'
+      OR COALESCE(ta.name, '') LIKE ? ESCAPE '\\'
+      OR CAST(t.amount AS TEXT) LIKE ? ESCAPE '\\'
+      OR substr(t.occurred_at, 1, 10) LIKE ? ESCAPE '\\'
+      OR t.type LIKE ? ESCAPE '\\'
+    )`);
+    const escaped = query.search.trim().replace(/[\\%_]/g, (value) => `\\${value}`);
+    const term = `%${escaped}%`;
+    params.push(term, term, term, term, term, term, term);
   }
 
   return {
@@ -307,11 +445,92 @@ function mapTransaction(row: TransactionRow): TransactionListItem {
     occurredAt: row.occurred_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    source: row.source,
+    fingerprint: row.fingerprint,
+    accountId: row.account_id,
+    transferAccountId: row.transfer_account_id,
+    transferFee: row.transfer_fee,
+    recurringRuleId: row.recurring_rule_id,
+    occurrenceKey: row.occurrence_key,
     categoryName: row.category_name,
     categoryIcon: row.category_icon,
     categoryColor: row.category_color,
     attachmentCount: row.attachment_count,
+    accountName: row.account_name,
+    transferAccountName: row.transfer_account_name,
   };
+}
+
+function sortSql(sort: TransactionSort = 'newest'): string {
+  if (sort === 'oldest') {
+    return 't.occurred_at ASC, t.created_at ASC';
+  }
+  if (sort === 'amount_desc') {
+    return 't.amount DESC, t.occurred_at DESC, t.created_at DESC';
+  }
+  if (sort === 'amount_asc') {
+    return 't.amount ASC, t.occurred_at DESC, t.created_at DESC';
+  }
+  return 't.occurred_at DESC, t.created_at DESC';
+}
+
+async function normalizeInput(
+  db: DatabaseClient,
+  input: TransactionInput,
+  current: TransactionRecord | null,
+): Promise<Required<Omit<TransactionInput, 'fingerprint' | 'recurringRuleId' | 'occurrenceKey'>> & {
+  fingerprint: string | null;
+  recurringRuleId: string | null;
+  occurrenceKey: string | null;
+}> {
+  if (!Number.isSafeInteger(input.amount) || input.amount <= 0) {
+    throw new Error('Số tiền phải là số nguyên VND lớn hơn 0.');
+  }
+  const transferFee = input.type === 'transfer' ? (input.transferFee ?? current?.transferFee ?? 0) : 0;
+  if (!Number.isSafeInteger(transferFee) || transferFee < 0) {
+    throw new Error('Phí chuyển khoản phải là số nguyên VND không âm.');
+  }
+
+  let accountId = input.accountId === undefined ? current?.accountId ?? DEFAULT_ACCOUNT_ID : input.accountId;
+  let transferAccountId = input.transferAccountId === undefined ? current?.transferAccountId ?? null : input.transferAccountId;
+  if (input.type === 'transfer') {
+    if (!accountId || !transferAccountId) {
+      throw new Error('Chuyển khoản cần tài khoản nguồn và tài khoản đích.');
+    }
+    if (accountId === transferAccountId) {
+      throw new Error('Tài khoản nguồn và đích phải khác nhau.');
+    }
+  } else {
+    accountId ??= DEFAULT_ACCOUNT_ID;
+    transferAccountId = null;
+  }
+
+  await requireAccount(db, accountId);
+  if (transferAccountId) {
+    await requireAccount(db, transferAccountId);
+  }
+
+  return {
+    type: input.type,
+    amount: input.amount,
+    categoryId: input.categoryId,
+    description: input.description.trim(),
+    occurredAt: input.occurredAt,
+    source: input.source ?? current?.source ?? 'manual',
+    fingerprint: input.fingerprint === undefined ? current?.fingerprint ?? null : input.fingerprint?.trim() || null,
+    accountId,
+    transferAccountId,
+    transferFee,
+    recurringRuleId: input.recurringRuleId === undefined ? current?.recurringRuleId ?? null : input.recurringRuleId?.trim() || null,
+    occurrenceKey: input.occurrenceKey === undefined ? current?.occurrenceKey ?? null : input.occurrenceKey?.trim() || null,
+  };
+}
+
+async function requireAccount(db: DatabaseClient, id: string): Promise<void> {
+  const account = await db.get<{ id: string }>('SELECT id FROM accounts WHERE id = ? AND deleted_at IS NULL', [id]);
+  if (!account) {
+    throw new Error('Tài khoản giao dịch không tồn tại.');
+  }
 }
 
 export async function addAttachment(

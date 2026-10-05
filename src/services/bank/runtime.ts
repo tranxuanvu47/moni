@@ -5,6 +5,7 @@ import { getPreference, preferenceKeys } from '@/src/database/repositories/prefe
 import { BANK_NOTIFICATION_PACKAGES } from '@/src/features/bank/packages';
 import { ingestBankNotification } from '@/src/services/bank/ingest';
 import { bankListenerAvailability, getNativeBankListener } from '@/src/services/bank/native-listener';
+import { notifyInboxDraftCreated, syncInboxBadgeCount } from '@/src/services/notifications/inbox-alerts';
 import { useDataStore } from '@/src/store/app-store';
 
 let started = false;
@@ -58,12 +59,17 @@ async function handleNotification(event: Parameters<typeof ingestBankNotificatio
   if (!(await isBankNotificationCaptureEnabled())) {
     return;
   }
-  const native = getNativeBankListener();
-  if (!native?.isNotificationPermissionGranted()) {
+  // Đã nhận được event từ NotificationListenerService → xử lý luôn (không chặn lại bằng check quyền JS).
+  const db = getDatabase();
+  const result = await ingestBankNotification(db, event);
+  if (result.outcome === 'pending') {
+    useDataStore.getState().bump();
+    await notifyInboxDraftCreated({
+      db,
+      description: result.description,
+      amount: result.amount,
+    }).catch(() => undefined);
     return;
   }
-  const result = await ingestBankNotification(getDatabase(), event);
-  if (result.outcome === 'saved') {
-    useDataStore.getState().bump();
-  }
+  await syncInboxBadgeCount(db).catch(() => undefined);
 }

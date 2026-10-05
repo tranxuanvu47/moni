@@ -25,6 +25,7 @@ expo-env.d.ts
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+firebase-debug.log
 
 # macOS
 .DS_Store
@@ -38,6 +39,8 @@ src/config/firebase.local.ts
 src/config/google.local.ts
 google-services.json
 GoogleService-Info.plist
+local-secrets/
+local-secrets.zip
 
 # IDE / tooling
 .idea/

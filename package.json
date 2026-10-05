@@ -11,6 +11,7 @@
     "@react-native-google-signin/google-signin": "16.1.5",
     "expo": "~57.0.26",
     "expo-android-notification-listener-service": "1.1.0",
+    "expo-asset": "~57.0.18",
     "expo-audio": "57.0.5",
     "expo-auth-session": "57.0.13",
     "expo-camera": "57.0.6",
@@ -48,6 +49,8 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "eslint": "^9.39.5",
+    "eslint-config-expo": "~57.0.2",
     "typescript": "~6.0.3",
     "vitest": "5.0.3"
   },
